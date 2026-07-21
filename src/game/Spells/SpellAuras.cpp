@@ -2055,6 +2055,24 @@ void Aura::HandleAuraDummy(bool apply, bool Real)
                 }
                 break;
             }
+            case SPELLFAMILY_ROGUE:
+            {
+                switch (GetId())
+                {
+                    case 52710: // Shadow of Death -- store combo points in top 3 bits of m_amount
+                    {
+                        Unit* caster = GetCaster();
+                        if (!caster || !caster->IsPlayer())
+                            break;
+                        uint8 cp = caster->ToPlayer()->GetComboPoints();
+                        if (!cp)
+                            break;
+                        m_modifier.m_amount = static_cast<int32>(static_cast<uint32>(cp) << 29);
+                        break;
+                    }
+                }
+                break;
+            }
         }
     }
     // AT REMOVE
@@ -2494,7 +2512,22 @@ void Aura::HandleAuraDummy(bool apply, bool Real)
             break;
         }
         case SPELLFAMILY_ROGUE:
+        {
+            switch (GetId())
+            {
+                case 52710: // Shadow of Death -- detonate accumulated damage as spell 52711
+                {
+                    Unit* caster = GetCaster();
+                    if (target->IsAlive() && caster && caster->IsAlive())
+                    {
+                        int32 accumulated = m_modifier.m_amount & 0x1FFFFFFF;
+                        caster->CastCustomSpell(GetTarget(), 52711, &accumulated, nullptr, nullptr, true, nullptr, this);
+                    }
+                    break;
+                }
+            }
             break;
+        }
         case SPELLFAMILY_HUNTER:
             break;
         case SPELLFAMILY_SHAMAN:

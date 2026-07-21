@@ -1203,6 +1203,22 @@ SpellAuraProcResult Unit::HandleDummyAuraProc(Unit *pVictim, uint32 damage, int3
 
                     return SPELL_AURA_PROC_OK;
                 }
+                // Shadow of Death
+                case 52710:
+                {
+                    Unit* auraCaster = triggeredByAura->GetCaster();
+                    if (!auraCaster || !auraCaster->IsAlive())
+                        return SPELL_AURA_PROC_FAILED;
+                    uint32 cp = (static_cast<uint32>(triggerAmount) >> 29) & 0x7;
+                    int32 maxDamage = (auraCaster->GetTotalAttackPowerValue(BASE_ATTACK) * cp) / 2;
+                    int32 storedDamage = (triggerAmount & 0x1FFFFFFF) + (damage * 0.1f * cp);
+                    int32 damageToStore = std::min(storedDamage, maxDamage);
+                    uint32 valueToStore = (uint32(cp) << 29) | (uint32(damageToStore) & 0x1FFFFFFF);
+                    triggeredByAura->GetModifier()->m_amount = static_cast<int32>(valueToStore);
+                    if (storedDamage > maxDamage)
+                        RemoveAurasDueToSpell(52710);
+                    break;
+                }
                 // Clean Escape
                 case 23582:
                     // triggered spell have same masks and etc with main Vanish spell
