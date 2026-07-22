@@ -31,6 +31,7 @@
 #include "Player.h"
 #include "Creature.h"
 #include "Spell.h"
+#include "ScriptMgr.h"
 #include "Group.h"
 #include "SpellAuras.h"
 #include "SpellEntry.h"
@@ -68,6 +69,7 @@
 #include "Autoscaling/AutoScaler.hpp"
 
 #include <math.h>
+#include <optional>
 #include <stdarg.h>
 #include "SuspiciousStatisticMgr.h"
 #include "PerfStats.h"
@@ -2111,11 +2113,15 @@ void Unit::CalculateDamageAbsorbAndResist(WorldObject *pCaster, SpellSchoolMask 
         if (remainingDamage < currentAbsorb)
             currentAbsorb = remainingDamage;
 
+        bool dropCharge = true;
+        if (aura->GetAuraScript())
+            aura->GetAuraScript()->OnAbsorb(aura, currentAbsorb, remainingDamage, dropCharge, damagetype);
+
         remainingDamage -= currentAbsorb;
 
         // Reduce shield amount
         mod->m_amount -= currentAbsorb;
-        if (aura->GetHolder()->DropAuraCharge())
+        if (dropCharge && aura->GetHolder()->DropAuraCharge())
             mod->m_amount = 0;
         // Need remove it later
         if (mod->m_amount <= 0)
@@ -2189,6 +2195,9 @@ void Unit::CalculateDamageAbsorbAndResist(WorldObject *pCaster, SpellSchoolMask 
             int32 manaReduction = int32(currentAbsorb * manaMultiplier);
             ApplyPowerMod(POWER_MANA, manaReduction, false);
         }
+
+        if ((*i)->GetAuraScript())
+            (*i)->GetAuraScript()->OnManaAbsorb(*i, currentAbsorb, remainingDamage);
 
         (*i)->GetModifier()->m_amount -= currentAbsorb;
         if ((*i)->GetModifier()->m_amount <= 0)
@@ -3903,7 +3912,7 @@ bool Unit::RemoveNoStackAurasDueToAuraHolder(SpellAuraHolder *holder)
         {
             // Nostalrius - fix stack same HoT rank / diff caster
             if (firstInChain && !allowPeriodicHealStacking)
-                RemoveAurasDueToSpell(i_spellId);
+                RemoveAurasDueToSpell(i_spellId, nullptr, AURA_REMOVE_BY_STACK);
             else switch (spellId)
             {
             // Blessing of Light does not stack between casters.
@@ -3966,7 +3975,7 @@ bool Unit::RemoveNoStackAurasDueToAuraHolder(SpellAuraHolder *holder)
                 continue;
             }
             DETAIL_LOG("[STACK][%u/%u] SpellSpecPerTarget ou SpellSpecPerCaster", spellId, i_spellId);
-            RemoveAurasDueToSpell(i_spellId);
+            RemoveAurasDueToSpell(i_spellId, nullptr, firstInChain ? AURA_REMOVE_BY_STACK : AURA_REMOVE_BY_DEFAULT);
 
             if (m_spellAuraHolders.empty())
                 break;
@@ -3995,7 +4004,7 @@ bool Unit::RemoveNoStackAurasDueToAuraHolder(SpellAuraHolder *holder)
                 continue;
             }
             DETAIL_LOG("[STACK][%u/%u] SpellPerTarget", spellId, i_spellId);
-            RemoveAurasDueToSpell(i_spellId);
+            RemoveAurasDueToSpell(i_spellId, nullptr, firstInChain ? AURA_REMOVE_BY_STACK : AURA_REMOVE_BY_DEFAULT);
 
             if (m_spellAuraHolders.empty())
                 break;
@@ -4834,8 +4843,13 @@ void Unit::HandleTriggers(Unit* pVictim, uint32 procExtra, uint32 amount, int32 
             if ((triggeredByAura->GetSpellProto()->TargetAuraState == AURA_STATE_HEALTHLESS_20_PERCENT) && (!itr.target || !itr.target->HasAuraState(AURA_STATE_HEALTHLESS_20_PERCENT)))
                 continue;
 
-            SpellAuraProcResult procResult = (*caster.*AuraProcHandler[auraModifier->m_auraname])(itr.target, amount, originalAmount, triggeredByAura, procSpell, itr.procFlag, procExtra, cooldown);
-            switch (procResult)
+            std::optional<SpellAuraProcResult> procResult;
+            if (triggeredByHolder->GetAuraScript())
+                procResult = triggeredByHolder->GetAuraScript()->OnProc(caster, itr.target, amount, originalAmount, triggeredByAura, procSpell, itr.procFlag, procExtra, cooldown);
+            if (!procResult)
+                procResult = (*caster.*AuraProcHandler[auraModifier->m_auraname])(itr.target, amount, originalAmount, triggeredByAura, procSpell, itr.procFlag, procExtra, cooldown);
+
+            switch (*procResult)
             {
                 case SPELL_AURA_PROC_CANT_TRIGGER:
                     continue;
@@ -5862,6 +5876,9 @@ bool Unit::IsSpellCrit(Unit const* pVictim, SpellEntry const* spellProto, SpellS
         }
     }
     // percent done
+    if (spell)
+        spell->OnSpellCritChanceCalculate(pVictim, crit_chance);
+
     // only players use intelligence for critical chance computations
     if (Player* modOwner = GetSpellModOwner())
         modOwner->ApplySpellMod(spellProto->Id, SPELLMOD_CRITICAL_CHANCE, crit_chance, spell);
