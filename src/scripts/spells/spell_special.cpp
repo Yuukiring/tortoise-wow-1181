@@ -303,7 +303,7 @@ struct spell_vampirism : public AuraScript
             return SPELL_AURA_PROC_FAILED;
 
         int32 const heal = std::max(1u, aura->GetModifier()->m_amount * damage / 100);
-        owner->ModifyHealth(heal);
+        owner->DealHeal(owner, heal, aura->GetSpellProto(), false);
         return SPELL_AURA_PROC_OK;
     }
 };

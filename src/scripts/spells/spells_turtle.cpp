@@ -353,6 +353,7 @@ struct spell_item_summon_utility_object : public SpellScript
         switch (spell->m_spellInfo->Id)
         {
             case 36600: object = 3000684; break;
+            case 35999: object = 3000686; break; // Sacred Chalice
             case 46002: object = 1000333; break;
             case 46001: object = 144112; break;
             default: break;

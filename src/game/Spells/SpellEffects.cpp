@@ -63,6 +63,7 @@
 
 #include "InstanceData.h"
 #include "ScriptMgr.h"
+#include "Autoscaling/AutoScaler.hpp"
 
 using namespace Spells;
 
@@ -2689,6 +2690,15 @@ void Spell::EffectSummonGuardian(SpellEffectIndex eff_idx)
             m_spellScript->OnSummonBeforeAdd(this, spawnCreature, count);
 
         map->Add((Creature*)spawnCreature);
+
+        // Apply AutoScaler scaling for dungeon/raid instances
+        if (map->IsDungeon())
+        {
+            uint32 playerCount = map->GetPlayersCountExceptGMs();
+            uint32 maxCount = ((DungeonMap*)map)->GetMaxPlayers();
+            if (playerCount > 0)
+                sAutoScaler->ScaleCreature(spawnCreature, playerCount, maxCount, map);
+        }
 
         // Notify Summoner
         if (m_casterUnit->GetTypeId() == TYPEID_UNIT && ((Creature*)m_casterUnit)->AI())

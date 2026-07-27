@@ -6742,7 +6742,7 @@ bool Player::UpdateGatherSkill(uint32 SkillId, uint32 SkillValue, uint32 RedLeve
             else
                 return UpdateSkillPro(SkillId, (SkillGainChance(SkillValue, RedLevel + 100, RedLevel + 50, RedLevel + 25) * Multiplicator) >> (SkillValue / sWorld.getConfig(CONFIG_UINT32_SKILL_CHANCE_SKINNING_STEPS)), gathering_skill_gain);
         case SKILL_MINING:
-//      case SKILL_SURVIVAL2:
+        case SKILL_SURVIVAL2:
             if (sWorld.getConfig(CONFIG_UINT32_SKILL_CHANCE_MINING_STEPS) == 0)
                 return UpdateSkillPro(SkillId, SkillGainChance(SkillValue, RedLevel + 100, RedLevel + 50, RedLevel + 25) * Multiplicator, gathering_skill_gain);
             else
@@ -21670,6 +21670,8 @@ uint32 Player::GetResurrectionSpellId() const
 // Used in triggers for check "Only to targets that grant experience or honor" req
 bool Player::IsHonorOrXPTarget(Unit* pVictim) const
 {
+    if (!pVictim)
+        return false;
     uint32 v_level = pVictim->GetLevel();
     uint32 k_grey  = MaNGOS::XP::GetGrayLevel(GetLevel());
 

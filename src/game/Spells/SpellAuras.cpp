@@ -287,8 +287,8 @@ pAuraHandler AuraHandler[TOTAL_AURAS] =
     &Aura::HandlePeriodicTriggerSpellWithValue,              //218 SPELL_AURA_PERIODIC_TRIGGER_SPELL2
     &Aura::HandleUnused,                                    //219 SPELL_AURA_219
     &Aura::HandleNoImmediateEffect,                         //220 SPELL_AURA_MOD_DAMAGE_TAKEN_FROM_CASTER_PET implemented in Unit::MeleeDamageBonusTaken and SpellDamageBonusTaken
-    &Aura::HandleAuraModAttackPower,                        //221 SPELL_AURA_MOD_ATTACK_POWER_AREA
-    &Aura::HandleAuraModAttackPowerPercent,                 //222 SPELL_AURA_MOD_ATTACK_POWER_PERCENT_AREA
+    &Aura::HandleAuraModAttackPowerOfPartyFlat,             //221 SPELL_AURA_MOD_ATTACK_POWER_OF_PARTY_FLAT
+    &Aura::HandleAuraModAttackPowerOfPartyPct,              //222 SPELL_AURA_MOD_ATTACK_POWER_OF_PARTY_PCT
     &Aura::HandleNoImmediateEffect,                         //223 SPELL_AURA_MOD_ITEM_PROC_CHANCE implemented in Player::CastItemCombatSpell
     &Aura::HandleNoImmediateEffect,                         //224 SPELL_AURA_MOD_BLOCK_DAMAGE_PERCENT implemented in Unit::CalculateAbsorbResistBlock
     &Aura::HandleNoImmediateEffect,                         //225 SPELL_AURA_MOD_GATHERING_ITEM_CHANCE
@@ -5186,6 +5186,58 @@ void Aura::HandleAuraModRangedAttackPowerPercent(bool apply, bool /*Real*/)
     GetTarget()->HandleAttackPowerModifier(RANGED_AP_MODS, AP_MOD_PCT, m_modifier.m_amount, apply);
 }
 
+void Aura::HandleAuraModAttackPowerOfPartyFlat(bool apply, bool /*Real*/)
+{
+    if (apply)
+    {
+        if (Unit* caster = GetCaster())
+            if (Player* modOwner = caster->GetSpellModOwner())
+                modOwner->ApplySpellMod(GetSpellProto()->Id, SPELLMOD_ATTACK_POWER, m_modifier.m_amount);
+    }
+
+    // Applies flat attack power to BOTH melee and ranged (party aura)
+    GetTarget()->HandleAttackPowerModifier(MELEE_AP_MODS, IsPositive() ? AP_MOD_POSITIVE_FLAT : AP_MOD_NEGATIVE_FLAT, m_modifier.m_amount, apply);
+    GetTarget()->HandleAttackPowerModifier(RANGED_AP_MODS, IsPositive() ? AP_MOD_POSITIVE_FLAT : AP_MOD_NEGATIVE_FLAT, m_modifier.m_amount, apply);
+}
+
+void Aura::HandleAuraModAttackPowerOfPartyPct(bool apply, bool /*Real*/)
+{
+    if (apply)
+    {
+        if (Unit* caster = GetCaster())
+            if (Player* modOwner = caster->GetSpellModOwner())
+                modOwner->ApplySpellMod(GetSpellProto()->Id, SPELLMOD_ATTACK_POWER, m_modifier.m_amount);
+    }
+
+    // Applies percent attack power to BOTH melee and ranged (party aura)
+    GetTarget()->HandleAttackPowerModifier(MELEE_AP_MODS, AP_MOD_PCT, m_modifier.m_amount, apply);
+    GetTarget()->HandleAttackPowerModifier(RANGED_AP_MODS, AP_MOD_PCT, m_modifier.m_amount, apply);
+}
+
+void Aura::HandleAuraPetAttackPowerFromRangedAP(bool apply, bool /*Real*/)
+{
+    // Spirit Bond: pet gains melee attack power from owner's ranged attack power
+    // Trigger pet stat recalculation when the aura is applied/removed
+    if (Unit* target = GetTarget())
+    {
+        if (Pet* pet = target->GetPet())
+            pet->UpdateAttackPowerAndDamage(false);
+    }
+}
+
+void Aura::HandleAuraPetSpellPowerFromRangedAP(bool apply, bool /*Real*/)
+{
+    // Spirit Bond: pet gains spell power from owner's ranged attack power
+    // Trigger pet bonus damage recalculation when the aura is applied/removed
+    if (Unit* target = GetTarget())
+    {
+        if (Pet* pet = target->GetPet())
+        {
+            pet->UpdateAttackPowerAndDamage(false);
+        }
+    }
+}
+
 /********************************/
 /***        DAMAGE BONUS      ***/
 /********************************/
@@ -8177,8 +8229,10 @@ bool _IsExclusiveSpellAura(SpellEntry const* spellproto, SpellEffectIndex eff, A
         case SPELL_AURA_MOD_DAMAGE_DONE:                                // Demonic Pact
         case SPELL_AURA_MOD_ATTACK_POWER_PCT:                           // Abomination's Might / Unleashed Rage
         case SPELL_AURA_MOD_RANGED_ATTACK_POWER_PCT:
+        case SPELL_AURA_MOD_ATTACK_POWER_PERCENT_AREA:                  // Trueshot Aura
         case SPELL_AURA_MOD_ATTACK_POWER:                               // (Greater) Blessing of Might / Battle Shout
         case SPELL_AURA_MOD_RANGED_ATTACK_POWER:
+        case SPELL_AURA_MOD_ATTACK_POWER_AREA:                          // Trueshot Aura
         case SPELL_AURA_MOD_POWER_REGEN:                                // (Greater) Blessing of Wisdom
         case SPELL_AURA_MOD_DAMAGE_PERCENT_TAKEN:                       // Glyph of Salvation / Pain Suppression / Safeguard ?
         case SPELL_AURA_MOD_STAT:

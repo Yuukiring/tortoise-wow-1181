@@ -478,10 +478,18 @@ void WorldSession::SendSpiritResurrect()
 
     // get corpse nearest graveyard
     WorldSafeLocsEntry const *corpseGrave = nullptr;
-    Corpse *corpse = _player->GetCorpse();
-    if (corpse)
-        corpseGrave = sObjectMgr.GetClosestGraveYard(
-                          corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), corpse->GetMapId(), _player->GetTeam());
+
+    if (BattleGround *bg = _player->GetBattleGround())
+    {
+        corpseGrave = bg->GetClosestGraveYard(_player);
+    }
+    else
+    {
+        Corpse *corpse = _player->GetCorpse();
+        if (corpse)
+            corpseGrave = sObjectMgr.GetClosestGraveYard(
+                              corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ(), corpse->GetMapId(), _player->GetTeam());
+    }
 
     // now can spawn bones
     _player->SpawnCorpseBones();
@@ -489,21 +497,12 @@ void WorldSession::SendSpiritResurrect()
     // teleport to nearest from corpse graveyard, if different from nearest to player ghost
     if (corpseGrave)
     {
-        WorldSafeLocsEntry const *ghostGrave = sObjectMgr.GetClosestGraveYard(_player->GetPositionX(), _player->GetPositionY(), _player->GetPositionZ(), _player->GetMapId(), _player->GetTeam());
-
         float orientation = _player->GetOrientation();
 
         if (float facing = sObjectMgr.GetWorldSafeLocFacing(corpseGrave->ID))
             orientation = facing;
 
-        if (corpseGrave != ghostGrave)
-            _player->TeleportTo(corpseGrave->map_id, corpseGrave->x, corpseGrave->y, corpseGrave->z, orientation);
-        // or update at original position
-        else
-        {
-            _player->GetCamera().UpdateVisibilityForOwner();
-            _player->UpdateObjectVisibility();
-        }
+        _player->TeleportTo(corpseGrave->map_id, corpseGrave->x, corpseGrave->y, corpseGrave->z, orientation);
     }
     // or update at original position
     else
@@ -614,7 +613,7 @@ void WorldSession::SendStablePet(ObjectGuid guid)
                 data << uint32(it->level);              // level
                 data << it->name;                       // name
                 data << uint32(it->loyalty);            // loyalty
-                data << uint8(it->slot + 1);            // slot
+                data << uint8(2);                       // slot
                 ++num;
             }
         }
