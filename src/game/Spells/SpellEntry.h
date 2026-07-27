@@ -434,6 +434,7 @@ namespace Spells
             case SPELL_EFFECT_APPLY_AREA_AURA_FRIEND:
             case SPELL_EFFECT_APPLY_AREA_AURA_ENEMY:
             case SPELL_EFFECT_APPLY_AREA_AURA_OWNER:
+            case SPELL_EFFECT_APPLY_AURA_PET:
                 return true;
         }
 
@@ -808,6 +809,15 @@ public:
     {
         //Collection of all the seal family flags. No other paladin spell has any of those.
         return IsFitToFamily<SPELLFAMILY_PALADIN, CF_PALADIN_SEAL_OF_THE_CRUSADER, CF_PALADIN_SEAL_OF_COMMAND, CF_PALADIN_SEALS>();
+    }
+
+    inline bool IsJudgementSpell() const
+    {
+        return IsFitToFamily<SPELLFAMILY_PALADIN,
+            CF_PALADIN_JUDGEMENT_OF_RIGHTEOUSNESS,
+            CF_PALADIN_JUDGEMENT_OF_WISDOM_LIGHT,
+            CF_PALADIN_JUDGEMENT_OF_JUSTICE,
+            CF_PALADIN_JUDGEMENT_OF_THE_CRUSADER>();
     }
 
     inline bool IsElementalShield() const

@@ -4813,6 +4813,11 @@ void Unit::HandleTriggers(Unit* pVictim, uint32 procExtra, uint32 amount, int32 
         uint32 cooldown = 0;
         if (spellProcEvent && spellProcEvent->cooldown)
             cooldown = spellProcEvent->cooldown;
+        if (cooldown)
+        {
+            if (Player* modOwner = triggeredByHolder->GetTarget()->GetSpellModOwner())
+                modOwner->ApplySpellMod(triggeredByHolder->GetId(), SPELLMOD_PROC_COOLDOWN, cooldown);
+        }
 
         for (int32 i = 0; i < MAX_EFFECT_INDEX; ++i)
         {
@@ -4868,6 +4873,9 @@ void Unit::HandleTriggers(Unit* pVictim, uint32 procExtra, uint32 amount, int32 
             // If last charge dropped add spell to remove list
             if (triggeredByHolder->DropAuraCharge())
                 removedSpells.push_back(RemovedSpellData(triggeredByHolder->GetId(), caster));
+
+            if (triggeredByHolder->GetAuraScript())
+                triggeredByHolder->GetAuraScript()->OnAuraChargesChanged(triggeredByHolder);
         }
 
         triggeredByHolder->SetInUse(false);
@@ -5806,8 +5814,23 @@ bool Unit::IsSpellCrit(Unit const* pVictim, SpellEntry const* spellProto, SpellS
                     crit_chance = ((Player*)this)->GetSpellCritPercent(GetFirstSchoolInMask(schoolMask));
                 else
                 {
-                    crit_chance = float(m_baseSpellCritChance);
-                    crit_chance += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_SPELL_CRIT_CHANCE_SCHOOL, schoolMask);
+                    Creature const* creature = ToCreature();
+                    Totem const* totem = creature && creature->IsTotem() ? creature->ToTotem() : nullptr;
+                    Unit* owner = totem && totem->GetTotemType() != TOTEM_STATUE ? GetOwner() : nullptr;
+                    Player const* playerOwner = owner ? owner->ToPlayer() : nullptr;
+
+                    if (playerOwner && playerOwner->GetClass() == CLASS_SHAMAN &&
+                        playerOwner->GetTotem(TOTEM_SLOT_FIRE) == totem &&
+                        (spellProto->GetSpellSchoolMask() & SPELL_SCHOOL_MASK_FIRE) &&
+                        spellProto->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE))
+                    {
+                        crit_chance = playerOwner->GetSpellCritPercent(GetFirstSchoolInMask(schoolMask));
+                    }
+                    else
+                    {
+                        crit_chance = float(m_baseSpellCritChance);
+                        crit_chance += GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_SPELL_CRIT_CHANCE_SCHOOL, schoolMask);
+                    }
                 }
                 if (IsPet())
                 {
@@ -5917,16 +5940,11 @@ uint32 Unit::SpellHealingBonusTaken(WorldObject* pCaster, SpellEntry const* spel
         return healamount < 0 ? 0 : healamount;
     }
 
-    // Taken mods
-    // Healing Wave cast
-    if (spellProto->IsFitToFamily<SPELLFAMILY_SHAMAN, CF_SHAMAN_HEALING_WAVE>())
-    {
-        // Search for Healing Way on Victim
-        Unit::AuraList const& auraDummy = GetAurasByType(SPELL_AURA_DUMMY);
-        for (const auto& itr : auraDummy)
-            if (itr->GetId() == 29203)
-                takenTotalMod *= (itr->GetModifier()->m_amount + 100.0f) / 100.0f;
-    }
+    // Scripted target-side healing taken mods
+    Unit::AuraList const& auraDummy = GetAurasByType(SPELL_AURA_DUMMY);
+    for (const auto& itr : auraDummy)
+        if (AuraScript* script = itr->GetAuraScript())
+            script->OnSpellHealingBonusTaken(itr, pCaster, spellProto, effectIndex, healamount, damagetype, stack, spell, takenTotalMod);
 
     // Healing Done
     // Done total percent damage auras
@@ -9428,6 +9446,25 @@ void Unit::ProcDamageAndSpellFor(bool isVictim, Unit* pTarget, uint32 procFlag, 
             }
             else //For attacker
             {
+                // Kill Command on critting victim
+                if ((procExtra & PROC_EX_CRITICAL_HIT) && pTarget)
+                {
+                    if (IsPlayer() && GetClass() == CLASS_HUNTER)
+                    {
+                        ModifyAuraState(AURA_STATE_CRIT, true);
+                        StartReactiveTimer(REACTIVE_CRIT, pTarget->GetObjectGuid());
+                    }
+                    // Deprecated in 1.18.1 - Baited Shot on pet critting victim
+                     else if (Unit* owner = GetOwner())
+                     {
+                         if (owner->IsPlayer() && owner->GetClass() == CLASS_HUNTER)
+                         {
+                             owner->ModifyAuraState(AURA_STATE_PET_CRIT, true);
+                             owner->StartReactiveTimer(REACTIVE_PET_CRIT, pTarget->GetObjectGuid());
+                         }
+                     }
+                }
+
                 // Overpower on victim dodge
                 if (procExtra & PROC_EX_DODGE && IsPlayer() && GetClass() == CLASS_WARRIOR)
                 {
@@ -9901,6 +9938,11 @@ void Unit::ClearAllReactives()
         ModifyAuraState(AURA_STATE_DEFENSE, false);
     if (GetClass() == CLASS_HUNTER && HasAuraState(AURA_STATE_HUNTER_PARRY))
         ModifyAuraState(AURA_STATE_HUNTER_PARRY, false);
+    if (HasAuraState(AURA_STATE_CRIT))
+        ModifyAuraState(AURA_STATE_CRIT, false);
+    // Deprecated in 1.18.1 for Baited Shot.
+    if (GetClass() == CLASS_HUNTER && HasAuraState(AURA_STATE_PET_CRIT))
+        ModifyAuraState(AURA_STATE_PET_CRIT, false);
     if (GetClass() == CLASS_ROGUE && HasAuraState(AURA_STATE_TARGET_DODGED))
         ModifyAuraState(AURA_STATE_TARGET_DODGED, false);
     if (GetClass() == CLASS_WARRIOR && IsPlayer())
@@ -9930,6 +9972,15 @@ void Unit::UpdateReactives(uint32 p_time)
                 case REACTIVE_HUNTER_PARRY:
                     if (GetClass() == CLASS_HUNTER && HasAuraState(AURA_STATE_HUNTER_PARRY))
                         ModifyAuraState(AURA_STATE_HUNTER_PARRY, false);
+                    break;
+                case REACTIVE_CRIT:
+                    if (GetClass() == CLASS_HUNTER && HasAuraState(AURA_STATE_CRIT))
+                        ModifyAuraState(AURA_STATE_CRIT, false);
+                    break;
+                // Deprecated in 1.18.1 for Baited Shot.
+                case REACTIVE_PET_CRIT:
+                    if (GetClass() == CLASS_HUNTER && HasAuraState(AURA_STATE_PET_CRIT))
+                        ModifyAuraState(AURA_STATE_PET_CRIT, false);
                     break;
                 case REACTIVE_OVERPOWER:
                     if (GetClass() == CLASS_WARRIOR && IsPlayer())
