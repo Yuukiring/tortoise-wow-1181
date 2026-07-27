@@ -1428,7 +1428,12 @@ struct AuraScript
     virtual void OnAbsorb(Aura* /*aura*/, int32& /*currentAbsorb*/, int32& /*remainingDamage*/, bool& /*dropCharge*/, DamageEffectType /*damageType*/) {}
     virtual void OnManaAbsorb(Aura* /*aura*/, int32& /*currentAbsorb*/, int32& /*remainingDamage*/) {}
     virtual void OnPeriodicCalculateAmount(Aura* /*aura*/, float& /*amount*/) {}
+    virtual void OnPeriodicDamageCalculateAmount(Aura* /*aura*/, float& /*amount*/) {}
     virtual void OnPeriodicHealingBonus(Aura* /*periodicAura*/, Aura* /*modifierAura*/, Unit* /*caster*/, Unit* /*target*/, uint32& /*amount*/) {}
+    virtual void OnSpellHealingBonusTaken(Aura* /*aura*/, WorldObject* /*caster*/, SpellEntry const* /*spellInfo*/, SpellEffectIndex /*effIdx*/, int32 /*healAmount*/, DamageEffectType /*damageType*/, uint32 /*stack*/, Spell* /*spell*/, float& /*takenTotalMod*/) {}
+    virtual void OnManaRegenCalculate(Aura* /*aura*/, float& /*baseRegen*/, float& /*mp5Regen*/) {}
+    virtual void OnAuraChargesChanged(SpellAuraHolder* /*holder*/) {}
+    virtual void OnThreatCalculate(Aura* /*aura*/, SpellEntry const* /*threatSpell*/, SpellSchoolMask /*schoolMask*/, float& /*threat*/) {}
     virtual void OnPeriodicTick(Aura* /*aura*/) {}
     virtual void OnPeriodicTrigger(Aura* /*aura*/, Unit* /*caster*/, Unit* /*target*/, WorldObject* /*targetObject*/, SpellEntry const*& /*spellInfo*/) {}
     virtual void OnPeriodicDummy(Aura* /*aura*/) {}
