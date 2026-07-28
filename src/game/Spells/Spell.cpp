@@ -455,8 +455,9 @@ void Spell::FillTargetMap()
                 switch (m_spellInfo->EffectImplicitTargetB[i])
                 {
                     case TARGET_NONE:
-                        // Arcane Missiles have strange targeting for auras
-                        if (m_spellInfo->IsFitToFamily<SPELLFAMILY_MAGE, CF_MAGE_ARCANE_MISSILES_CHANNEL>())
+                        // Arcane Missiles and Icicles have strange targeting for auras  
+                        if (m_spellInfo->IsFitToFamily<SPELLFAMILY_MAGE, CF_MAGE_ARCANE_MISSILES_CHANNEL>() ||
+                            m_spellInfo->IsFitToFamily<SPELLFAMILY_MAGE, CF_MAGE_ICICLES1>())
                         {
                             if (Unit* pUnitTarget = m_caster->SelectMagnetTarget(m_targets.getUnitTarget(), this, SpellEffectIndex(i)))
                             {
@@ -5750,6 +5751,11 @@ SpellCastResult Spell::CheckCast(bool strict)
                 }
             }
             // Some special spells with non-caster only mode
+            // Icicles
+            if (m_caster == target &&
+                m_spellInfo->SpellFamilyName == SPELLFAMILY_MAGE &&
+                m_spellInfo->SpellFamilyFlags == 0x800080000)
+                return SPELL_FAILED_BAD_TARGETS;
         }
 
         // check pet presents

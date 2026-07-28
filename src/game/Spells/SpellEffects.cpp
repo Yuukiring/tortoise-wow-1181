@@ -1232,6 +1232,74 @@ void Spell::EffectDummy(SpellEffectIndex eff_idx)
         {
             break;
         }
+        case SPELLFAMILY_PRIEST:
+        {
+            switch (m_spellInfo->Id)
+            {
+                case 51478: // Holy Shock责罚
+                case 51479:
+                case 51480:
+                {
+                    if (!unitTarget)
+                        return;
+
+                    class DelayedSpellCastEvent : public BasicEvent
+                    {
+                    public:
+                        DelayedSpellCastEvent(Unit* caster, Unit* target, uint32 spellId)
+                            : m_caster(caster), m_target(target), m_spellId(spellId) {
+                        }
+
+                        bool Execute(uint64, uint32) override
+                        {
+                            if (m_caster && m_target)
+                                m_caster->CastSpell(m_target, m_spellId, true);
+                            return true;
+                        }
+
+                    private:
+                        Unit* m_caster;
+                        Unit* m_target;
+                        uint32 m_spellId;
+                    };
+
+                    uint32 levelLimit = 0;
+                    switch (m_spellInfo->Id)
+                    {
+                        case 51478: levelLimit = 35; break;
+                        case 51479: levelLimit = 45; break;
+                        case 51480: levelLimit = 55; break;
+                    }
+
+                    if (m_caster->IsFriendlyTo(unitTarget))
+                    {
+                        if (unitTarget->GetHealthPercent() < 80.0f || unitTarget->GetLevel() < levelLimit)
+                        {
+                            m_damage = 0;
+                            return;
+                        }
+
+                        uint32 friendlySpellId = 0;
+                        switch (m_spellInfo->Id)
+                        {
+                            case 51478: friendlySpellId = 51481; break;
+                            case 51479: friendlySpellId = 51482; break;
+                            case 51480: friendlySpellId = 51483; break;
+                        }
+
+                        m_caster->CastSpell(unitTarget, friendlySpellId, true);
+                        //m_damage = 0;
+                    }
+                    else
+                    {
+                        m_caster->m_Events.AddEvent(new DelayedSpellCastEvent(static_cast<Unit*>(m_caster), unitTarget, 51569), m_caster->m_Events.CalculateTime(1));
+                    }
+                    return;
+                }
+                break;
+            }
+            break;
+        }
     }
 
     // pet auras
@@ -4122,6 +4190,29 @@ void Spell::EffectScriptEffect(SpellEffectIndex eff_idx)
                     if (Player* pTarget = ToPlayer(unitTarget))
                         pTarget->CastSpell(pTarget, 32061, true);
 
+                    return;
+                }
+            }
+            break;
+        }
+        case SPELLFAMILY_MAGE:
+        {
+            switch (m_spellInfo->Id)
+            {
+                case 52500:                                 //lengque 清除冰柱冷却
+                {
+                    if (m_caster->GetTypeId() != TYPEID_PLAYER)
+                        return;
+
+                    const uint32 spellsToClear[] = { 52516, 51991, 51995, 51997 };
+                    for (uint32 spellId : spellsToClear)
+                    {
+                        if (SpellEntry const* spellInfo = sSpellMgr.GetSpellEntry(spellId))
+                        {
+                            if (spellInfo->GetRecoveryTime() > 0)
+                                ((Player*)m_caster)->RemoveSpellCooldown(spellId, true);
+                        }
+                    }
                     return;
                 }
             }
