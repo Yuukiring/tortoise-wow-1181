@@ -1,3 +1,4 @@
+
 -- ==============================================
 -- Issue #314: Envenom (52531) should also affect Wound Poison, matching Improved Poisons.
 -- Old mask 0x1E000 (bits 13-16) only covers Instant/Deadly/Crippling Poison; Wound Poison

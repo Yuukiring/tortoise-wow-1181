@@ -262,13 +262,6 @@ struct spell_rogue_improved_ambush : public AuraScript
     }
 };
 
-// Shadow of Death: remembers the caster's combo points on apply, accumulates
-// 10%-per-combo-point of incoming damage on proc (capped at casterAP*cp/2), and
-// detonates the accumulated damage as spell 52711 when the aura ends.
-// A fresh instance of this script is constructed per SpellAuraHolder (see
-// sScriptMgr.GetAuraScript in the SpellAuraHolder ctor), so these members are
-// private scratch state for this one aura application -- no need to bit-pack
-// into the shared Modifier::m_amount the way the old switch-case code had to.
 struct spell_rogue_shadow_of_death : public AuraScript
 {
     uint8 m_comboPoints = 0;
@@ -283,9 +276,6 @@ struct spell_rogue_shadow_of_death : public AuraScript
             if (caster && caster->IsPlayer())
             {
                 m_comboPoints = caster->ToPlayer()->GetComboPoints();
-                // Snapshot the cap at activation rather than recalculating live AP on every
-                // proc -- the old single-int storage couldn't hold a 3rd value, so it was
-                // recomputed each proc and could drift if the caster's AP changed mid-duration.
                 m_maxDamage = int32(caster->GetTotalAttackPowerValue(BASE_ATTACK) * m_comboPoints) / 2;
             }
         }
