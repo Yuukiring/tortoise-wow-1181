@@ -6303,7 +6303,57 @@ uint32 Unit::MeleeDamageBonusTaken(WorldObject* pCaster, uint32 pdamage, WeaponA
     // already with coeff!
     if (spellProto && (spellProto->Id == 20424 ||
         (spellProto->SpellFamilyName == SPELLFAMILY_PALADIN && spellProto->DmgClass == SPELL_DAMAGE_CLASS_MELEE))) // SoR is the only pala spell with melee dmg class
+    {
+        // These spells already include their spell-power coefficient in the proc
+        // handler (see spell_paladin_seal_of_righteousness), so the taken-flat bonus
+        // must NOT be rescaled by SpellBonusWithCoeffs here. The flat school
+        // damage-taken bonus from auras such as Judgement of the Crusader
+        // (SPELL_AURA_MOD_DAMAGE_TAKEN) is applied scaled by a spell coefficient,
+        // which is the larger of Seal of Command's (0.20) and Seal of Righteousness's
+        // (0.10 * weaponSpeed for 1H, 0.125 * weaponSpeed for 2H) coefficients.
+        if (flat)
+        {
+            uint32 const schoolMask = spellProto->GetSpellSchoolMask();
+            // Flat damage-taken bonus on the victim, e.g. Judgement of the Crusader.
+            int32 const takenFlat = GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_DAMAGE_TAKEN, schoolMask);
+
+            // The Judgement of the Crusader bonus (flat value + caster spell power *
+            // coefficient) must only be applied while the debuff is actually present
+            // on the victim. Without it we keep the original behaviour (no taken bonus
+            // for these spells, their spell-power coefficient is already handled in the
+            // proc handler).
+            if (takenFlat <= 0)
+                return pdamage;
+
+            // Spell coefficient: the larger of Seal of Command's (0.20, see
+            // SpellEntry.cpp Id == 20424) and Seal of Righteousness's (0.10 per
+            // second of weapon speed for 1H, 0.125 per second for 2H, see
+            // spell_paladin.cpp CalculateSealOfRighteousnessSpellPowerBonus).
+            float coefficient = 0.20f;
+            if (Player const* player = pCaster->ToPlayer())
+            {
+                float sorCoeff = 0.10f;
+                float weaponSpeed = BASE_ATTACK_TIME / 1000.0f;
+                if (Item const* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND))
+                {
+                    sorCoeff = item->isOneHandedWeapon() ? 0.10f : 0.125f;
+                    weaponSpeed = item->GetProto()->Delay / 1000.0f;
+                }
+                sorCoeff *= weaponSpeed;
+                if (sorCoeff > coefficient)
+                    coefficient = sorCoeff;
+            }
+
+            // Final bonus added to the holy damage:
+            //   Judgement of the Crusader flat value + caster spell power * coefficient
+            int32 const spellPower = pCaster->SpellBaseDamageBonusDone(SpellSchoolMask(schoolMask));
+            float const bonus = float(takenFlat * int32(stack)) + float(spellPower) * coefficient;
+            float const tmpDamage = float(int32(pdamage)) + bonus;
+
+            return tmpDamage > 0 ? uint32(tmpDamage) : 0;
+        }
         return pdamage;
+    }
 
     // differentiate for weapon damage based spells
     bool isWeaponDamageBasedSpell = !(spellProto && (damagetype == DOT || spellProto->HasEffect(SPELL_EFFECT_SCHOOL_DAMAGE)));

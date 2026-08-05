@@ -80,6 +80,12 @@ void TransportMgr::LoadTransportTemplates()
             continue;
         }
 
+        if (sTaxiPathNodesByPath[goInfo->moTransport.taxiPathId].empty())
+        {
+            sLog.outErrorDb("Transport %u (name: %s) has taxiPathId %u but no path nodes exist in DBC, skipped.", entry, goInfo->name.c_str(), goInfo->moTransport.taxiPathId);
+            continue;
+        }
+
         // paths are generated per template, saves us from generating it again in case of instanced transports
         TransportTemplate& transport = _transportTemplates[entry];
         transport.entry = entry;
@@ -118,6 +124,14 @@ void TransportMgr::GeneratePath(GameObjectInfo const* goInfo, TransportTemplate*
 {
     uint32 pathId = goInfo->moTransport.taxiPathId;
     TaxiPathNodeList const& path = sTaxiPathNodesByPath[pathId];
+
+    if (path.size() < 2)
+    {
+        sLog.outErrorDb("Transport %u (name: %s) has taxiPathId %u with insufficient nodes (%u), path generation skipped.",
+            goInfo->id, goInfo->name.c_str(), pathId, uint32(path.size()));
+        return;
+    }
+
     std::vector<KeyFrame>& keyFrames = transport->keyFrames;
     Movement::PointsArray splinePath, allPoints;
     bool mapChange = false;
