@@ -26,6 +26,7 @@
 #include "World.h"
 #include "Chat.h"
 #include "Spell.h"
+#include "ScriptMgr.h"
 #include "BattleGroundMgr.h"
 #include "MapManager.h"
 #include "Unit.h"
@@ -1135,6 +1136,26 @@ bool SpellMgr::IsNoStackSpellDueToSpell(uint32 spellId_1, uint32 spellId_2) cons
                 // Serpent Sting & (Immolation/Explosive Trap Effect)
                 if (((spellInfo_1->SpellFamilyFlags & UI64LIT(0x4)) && (spellInfo_2->SpellFamilyFlags & UI64LIT(0x00000004000))) ||
                         ((spellInfo_2->SpellFamilyFlags & UI64LIT(0x4)) && (spellInfo_1->SpellFamilyFlags & UI64LIT(0x00000004000))))
+                    return false;
+
+                // Poison Spit & Immolation Trap Effect
+                if (((spellInfo_1->SpellFamilyFlags & UI64LIT(0x4)) && (spellInfo_2->SpellFamilyFlags & UI64LIT(0x8000000000))) ||
+                        ((spellInfo_2->SpellFamilyFlags & UI64LIT(0x4)) && (spellInfo_1->SpellFamilyFlags & UI64LIT(0x8000000000))))
+                    return false;
+
+                // Lacerate & Immolation Trap Effect
+                if (((spellInfo_1->SpellFamilyFlags & UI64LIT(0x4)) && (spellInfo_2->SpellFamilyFlags & UI64LIT(0x4000000000))) ||
+                        ((spellInfo_2->SpellFamilyFlags & UI64LIT(0x4)) && (spellInfo_1->SpellFamilyFlags & UI64LIT(0x4000000000))))
+                    return false;
+
+                // Lacerate & Poison Spit
+                if (((spellInfo_1->SpellFamilyFlags & UI64LIT(0x8000000000)) && (spellInfo_2->SpellFamilyFlags & UI64LIT(0x4000000000))) ||
+                        ((spellInfo_2->SpellFamilyFlags & UI64LIT(0x8000000000)) && (spellInfo_1->SpellFamilyFlags & UI64LIT(0x4000000000))))
+                    return false;
+
+                // Serpent Sting & Lacerate
+                if (((spellInfo_1->SpellFamilyFlags & UI64LIT(0x00000004000)) && (spellInfo_2->SpellFamilyFlags & UI64LIT(0x4000000000))) ||
+                        ((spellInfo_2->SpellFamilyFlags & UI64LIT(0x00000004000)) && (spellInfo_1->SpellFamilyFlags & UI64LIT(0x4000000000))))
                     return false;
 
                 // Bestial Wrath
@@ -3069,6 +3090,7 @@ namespace SpellInternal
                 case SPELL_EFFECT_APPLY_AREA_AURA_ENEMY:
                 case SPELL_EFFECT_APPLY_AREA_AURA_FRIEND:
                 case SPELL_EFFECT_APPLY_AREA_AURA_OWNER:
+                case SPELL_EFFECT_APPLY_AURA_PET:
                 return true;
                 default:
                     break;
@@ -3126,7 +3148,9 @@ namespace SpellInternal
 
         for (int i = 0; i < MAX_EFFECT_INDEX; ++i)
         {
-            if (SpellEffects(spellInfo->Effect[i]) == SPELL_EFFECT_APPLY_AURA || SpellEffects(spellInfo->Effect[i]) == SPELL_EFFECT_APPLY_AREA_AURA_PARTY)
+            if (SpellEffects(spellInfo->Effect[i]) == SPELL_EFFECT_APPLY_AURA ||
+                SpellEffects(spellInfo->Effect[i]) == SPELL_EFFECT_APPLY_AURA_PET ||
+                SpellEffects(spellInfo->Effect[i]) == SPELL_EFFECT_APPLY_AREA_AURA_PARTY)
                 return false;
         }
 
@@ -3514,6 +3538,7 @@ void SpellMgr::LoadSpells()
         spell->DmgMultiplier[1] = fields[143].GetFloat();
         spell->DmgMultiplier[2] = fields[144].GetFloat();
         spell->Custom = fields[148].GetUInt32();
+        spell->ScriptId = sScriptMgr.GetScriptId(fields[149].GetString());
         ParseTooltip(spell.get());
 
      
