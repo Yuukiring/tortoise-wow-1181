@@ -3,6 +3,7 @@
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
  * Copyright (C) 2011-2016 Nostalrius <https://nostalrius.org>
  * Copyright (C) 2016-2017 Elysium Project <https://github.com/elysium-project>
+ * Copyright (C) vMaNGOS contributors <https://github.com/vmangos/core>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -58,6 +59,7 @@
 #include "GameEventMgr.h"
 #include "Chat.h"
 #include "CompanionManager.hpp"
+#include "ScriptObjects.h"
 #include "MountManager.hpp"
 #include "ToyManager.hpp"
 
@@ -204,7 +206,7 @@ pEffect SpellEffects[TOTAL_SPELL_EFFECTS] =
     &Spell::EffectNostalrius,                               //131 SPELL_EFFECT_NOSTALRIUS
     &Spell::EffectApplyAreaAura,                            //132 SPELL_EFFECT_APPLY_AREA_AURA_RAID
     &Spell::EffectApplyAreaAura,                            //133 SPELL_EFFECT_APPLY_AREA_AURA_OWNER
-    &Spell::EffectApplyAura,                                //134 SPELL_EFFECT_APPLY_AURA_PET
+    &Spell::EffectApplyAreaAura,                            //134 SPELL_EFFECT_APPLY_AURA_PET
 };
 
 void Spell::EffectEmpty(SpellEffectIndex /*eff_idx*/)
@@ -4281,6 +4283,11 @@ void Spell::EffectDuel(SpellEffectIndex eff_idx)
 
     caster->SetGuidValue(PLAYER_DUEL_ARBITER, pGameObj->GetObjectGuid());
     target->SetGuidValue(PLAYER_DUEL_ARBITER, pGameObj->GetObjectGuid());
+
+    ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_DUEL_REQUEST, [&](PlayerScript* script)
+    {
+        script->OnDuelRequest(target, caster);
+    });
 }
 
 void Spell::EffectStuck(SpellEffectIndex /*eff_idx*/)
