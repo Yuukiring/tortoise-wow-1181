@@ -3611,6 +3611,10 @@ void Player::GiveXP(uint32 xp, Unit* victim)
     if (!IsAlive())
         return;
 
+    if (HasChallenge(CHALLENGE_BREWMASTER) &&
+        GetDrunkenstateByValue(GetDrunkValue()) != DRUNKEN_SMASHED)
+        return;
+
     uint32 level = GetLevel();
 
     if (IsHardcore() && InBattleGround())
@@ -3796,6 +3800,15 @@ void Player::GiveLevel(uint32 level)
             AwardTitle(TITLE_THE_WANDERER);
             MailVagrantModeRewards(level);
         }
+    }
+
+    if (HasChallenge(CHALLENGE_CRAFTMASTER) && level == PLAYER_MAX_LEVEL)
+        AwardTitle(TITLE_CRAFTMASTER);
+
+    if (HasChallenge(CHALLENGE_BREWMASTER) && level == PLAYER_MAX_LEVEL)
+    {
+        AwardTitle(TITLE_BREWMASTER);
+        MailBrewmasterModeRewards();
     }
 
     if (HasChallenge(CHALLENGE_BOARING_MODE))
@@ -7007,7 +7020,7 @@ void Player::UpdateSkillsForLevel()
         if (!pSkill)
             continue;
 
-        SkillRaceClassInfoEntry const* rcEntry = GetSkillRaceClassInfo(pskill, GetRace(), GetClass());
+        SkillRaceClassInfoEntry const* rcEntry = sSpellMgr.GetSkillRaceClassInfo(pskill, GetRace(), GetClass());
         if (!rcEntry)
             continue;
 
@@ -7379,7 +7392,7 @@ void Player::UpdateSpellTrainedSkills(uint32 spellId, bool apply, bool hardReset
                 if (HasSkill(uint16(pSkill->id)))
                     continue;
 
-                SkillRaceClassInfoEntry const* rcInfo = GetSkillRaceClassInfo(pSkill->id, GetRace(), GetClass());
+                SkillRaceClassInfoEntry const* rcInfo = sSpellMgr.GetSkillRaceClassInfo(pSkill->id, GetRace(), GetClass());
                 if (!rcInfo)
                     continue;
 
@@ -11675,6 +11688,14 @@ InventoryResult Player::CanEquipItem(uint8 slot, uint16 &dest, ItemPrototype con
 
             if (IsInCombat() && pProto->Class == ITEM_CLASS_WEAPON && m_weaponChangeTimer != 0)
                 return EQUIP_ERR_CANT_DO_RIGHT_NOW;         // maybe exist better err
+
+            if (HasChallenge(CHALLENGE_CRAFTMASTER) && GetLevel() < PLAYER_MAX_LEVEL &&
+                pProto->InventoryType != INVTYPE_TABARD &&
+                (!pItem || pItem->GetGuidValue(ITEM_FIELD_CREATOR) != GetObjectGuid()))
+            {
+                GetSession()->SendNotification("You can only equip items you crafted yourself in the Traveling Craftmaster challenge.");
+                return EQUIP_ERR_CANT_DO_RIGHT_NOW;
+            }
 
             if (HasChallenge(CHALLENGE_VAGRANT_MODE) && GetLevel() < PLAYER_MAX_LEVEL)
             {
@@ -21500,9 +21521,9 @@ bool Player::IsSpellFitByClassAndRace(uint32 spell_id, uint32* pReqlevel /*= nul
             continue;
 
         SkillRaceClassInfoMapBounds bounds = sSpellMgr.GetSkillRaceClassInfoMapBounds(abilityEntry->skillId);
-        for (SkillRaceClassInfoMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
+        for (SkillRaceClassInfoValueMap::const_iterator itr = bounds.first; itr != bounds.second; ++itr)
         {
-            SkillRaceClassInfoEntry const* skillRCEntry = itr->second;
+            SkillRaceClassInfoEntry const* skillRCEntry = &itr->second;
             if ((skillRCEntry->raceMask & racemask) && (skillRCEntry->classMask & classmask))
             {
                 if (skillRCEntry->flags & ABILITY_SKILL_NONTRAINABLE)
@@ -22523,7 +22544,7 @@ void Player::_LoadSkills(QueryResult *result)
                 continue;
             }
 
-            SkillRaceClassInfoEntry const* rcEntry = GetSkillRaceClassInfo(skill, GetRace(), GetClass());
+            SkillRaceClassInfoEntry const* rcEntry = sSpellMgr.GetSkillRaceClassInfo(skill, GetRace(), GetClass());
             if (!rcEntry)
             {
                 sLog.outError("Character %u has forbidden skill %u for his race / class combination.", GetGUIDLow(), skill);
@@ -24480,6 +24501,16 @@ void Player::MailBoaringModeRewards(uint32 level)
         .SendMailTo(this, MailSender(MAIL_CREATURE, uint32(16547), MAIL_STATIONERY_DEFAULT), MAIL_CHECK_MASK_COPIED, 0, 30 * DAY);
 }
 
+void Player::MailBrewmasterModeRewards()
+{
+    Item* reward = Item::CreateItem(GetTeam() == ALLIANCE ? 81234 : 80455, 1, this);
+    reward->SaveToDB();
+
+    MailDraft("Master of the Brew", "Congratulations on reaching level 60 while walking the Path of the Brewmaster! Accept this Brewfest mount as a reward for your spirited journey.")
+        .AddItem(reward)
+        .SendMailTo(this, MailSender(MAIL_CREATURE, uint32(16547), MAIL_STATIONERY_DEFAULT), MAIL_CHECK_MASK_COPIED, 0, 30 * DAY);
+}
+
 bool Player::IsCityProtector() { return HasTitle(GetRace()); /*GetByteValue(PLAYER_BYTES_3, 2) == GetRace();*/ }
 bool Player::IsImmortal() { return GetByteValue(PLAYER_BYTES_3, 2) == 52; }
 bool Player::IsScarabLord() { return HasItemCount(21176, 1, 0); }
@@ -25501,6 +25532,18 @@ bool Player::HasEarnedTitle(uint8 titleId)
     case TITLE_THE_WANDERER:
     {
         if (GetLevel() == PLAYER_MAX_LEVEL && HasChallenge(CHALLENGE_VAGRANT_MODE))
+            return true;
+        break;
+    }
+    case TITLE_CRAFTMASTER:
+    {
+        if (GetLevel() == PLAYER_MAX_LEVEL && HasChallenge(CHALLENGE_CRAFTMASTER))
+            return true;
+        break;
+    }
+    case TITLE_BREWMASTER:
+    {
+        if (GetLevel() == PLAYER_MAX_LEVEL && HasChallenge(CHALLENGE_BREWMASTER))
             return true;
         break;
     }
