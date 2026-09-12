@@ -147,7 +147,7 @@ bool Group::Create(ObjectGuid guid, const char * name)
         CharacterDatabase.PExecute("DELETE FROM `groups` WHERE groupId ='%u'", m_Id);
         CharacterDatabase.PExecute("DELETE FROM group_member WHERE groupId ='%u'", m_Id);
 
-        CharacterDatabase.PExecute("INSERT INTO groups(groupId,leaderGuid,mainTank,mainAssistant,lootMethod,looterGuid,lootThreshold,icon1,icon2,icon3,icon4,icon5,icon6,icon7,icon8,isRaid) "
+        CharacterDatabase.PExecute("INSERT INTO `groups`(groupId,leaderGuid,mainTank,mainAssistant,lootMethod,looterGuid,lootThreshold,icon1,icon2,icon3,icon4,icon5,icon6,icon7,icon8,isRaid) "
                                    "VALUES('%u','%u','%u','%u','%u','%u','%u','" UI64FMTD "','" UI64FMTD "','" UI64FMTD "','" UI64FMTD "','" UI64FMTD "','" UI64FMTD "','" UI64FMTD "','" UI64FMTD "','%u')",
                                    m_Id, m_leaderGuid.GetCounter(), m_mainTankGuid.GetCounter(), m_mainAssistantGuid.GetCounter(), uint32(m_lootMethod),
                                    m_looterGuid.GetCounter(), uint32(m_lootThreshold),
@@ -233,7 +233,7 @@ void Group::ConvertToRaid()
     _initRaidSubGroupsCounter();
 
     if (!isBGGroup())
-        CharacterDatabase.PExecute("UPDATE groups SET isRaid = 1 WHERE groupId='%u'", m_Id);
+        CharacterDatabase.PExecute("UPDATE `groups` SET isRaid = 1 WHERE groupId='%u'", m_Id);
     SendUpdate();
 
     // update quest related GO states (quest activity dependent from raid membership)
@@ -1023,6 +1023,16 @@ void Group::StartLootRoll(Creature* lootTarget, LootMethod method, Loot* loot, u
         loot->items[itemSlot].is_blocked = true;
         lootTarget->StartGroupLoot(this, LOOT_ROLL_TIMEOUT);
         RollId.push_back(r);
+
+        // The managed bots vote now rather than never. They have no client to
+        // send CMSG_LOOT_ROLL, so before this every roll they were part of ran
+        // its full thirty seconds and passed by default.
+        //
+        // After RollId.push_back on purpose: CountRollVote looks the roll up in
+        // that list, and a vote cast before it is in there finds nothing.
+        ScriptRegistry<GroupScript>::ForEach([&](GroupScript* s) {
+            s->OnLootRollStarted(this, lootTarget->GetObjectGuid(), itemSlot, lootItem.itemid);
+        });
     }
     else                                            // no looters??
         delete r;

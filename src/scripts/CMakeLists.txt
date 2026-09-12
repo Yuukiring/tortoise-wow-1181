@@ -470,7 +470,6 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/src/game/Movement/spline
   ${CMAKE_SOURCE_DIR}/src/game/Objects
   ${CMAKE_SOURCE_DIR}/src/game/OutdoorPvP
-  ${CMAKE_SOURCE_DIR}/src/game/PlayerBots
   ${CMAKE_SOURCE_DIR}/src/game/Protocol
   ${CMAKE_SOURCE_DIR}/src/game/Spells
   ${CMAKE_SOURCE_DIR}/src/game/Threat
@@ -559,5 +558,13 @@ else()
       target_precompile_headers(${LIBRARY_NAME} PRIVATE
           ${PCHS}
           )
+  endif()
+endif()
+
+if(NOT USE_PCH)
+  if(MSVC)
+    target_compile_options(${LIBRARY_NAME} PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/scriptPCH.h")
+  else()
+    target_compile_options(${LIBRARY_NAME} PRIVATE "-include${CMAKE_CURRENT_SOURCE_DIR}/scriptPCH.h")
   endif()
 endif()
