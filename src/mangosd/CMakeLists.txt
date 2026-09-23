@@ -16,17 +16,32 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 set(EXECUTABLE_NAME mangosd)
+
+# SOAP remote-command interface: off unless -DENABLE_SOAP=ON (root CMakeLists).
 set (EXECUTABLE_SRCS 
 	CliRunnable.h
+	DynamicModules.h
 	Master.h
 	WorldRunnable.h
 	CliRunnable.cpp
+	DynamicModules.cpp
 	Main.cpp
 	Master.cpp
 	WorldRunnable.cpp
 
 )
 
+
+if(ENABLE_SOAP)
+  list(APPEND EXECUTABLE_SRCS
+    MaNGOSsoap.h
+    MaNGOSsoap.cpp
+    soap/soapStub.h
+    soap/soapH.h
+    soap/soapC.cpp
+    soap/soapServer.cpp
+  )
+endif()
 
 if(WIN32)
   list(APPEND EXECUTABLE_SRCS
@@ -61,17 +76,22 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/src/game/Movement/spline
   ${CMAKE_SOURCE_DIR}/src/game/Objects
   ${CMAKE_SOURCE_DIR}/src/game/OutdoorPvP
-  ${CMAKE_SOURCE_DIR}/src/game/PlayerBots
   ${CMAKE_SOURCE_DIR}/src/game/Protocol
   ${CMAKE_SOURCE_DIR}/src/game/Spells
   ${CMAKE_SOURCE_DIR}/src/game/Threat
   ${CMAKE_SOURCE_DIR}/src/game/Transports
   ${CMAKE_SOURCE_DIR}/src/game/vmap
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${CMAKE_CURRENT_SOURCE_DIR}/soap
+  ${CMAKE_SOURCE_DIR}/dep/include/gsoap
   ${CMAKE_BINARY_DIR}/src/shared
   ${CMAKE_BINARY_DIR}
+  # First: whatever points at a vcpkg tree (ACE_ROOT here; TBB_ROOT too, in src/game and
+  # modules) also carries vcpkg's own OpenSSL 3.x headers - regardless of whether that came
+  # from -D or the matching environment variable, so this can't just be "before ACE_INCLUDE_DIR".
+  ${OPENSSL_INCLUDE_DIR}
   ${ACE_INCLUDE_DIR}
   ${MYSQL_INCLUDE_DIR}
-  ${OPENSSL_INCLUDE_DIR}
 )
 
 if(WIN32)
@@ -123,9 +143,44 @@ if(USE_DISCORD_BOT)
   )
 endif()
 
+# playerbots library link gated by BUILD_PLAYERBOTS.
+if(BUILD_PLAYERBOTS)
+  # playerbots is part of the `modules` library now (modules/mod-playerbots),
+  # which this executable already links.
+endif()
+
 target_link_libraries(${EXECUTABLE_NAME}
     libdeflate
 )
+
+# Use our matching runtime built from source on both Windows and Linux.
+if(ENABLE_SOAP)
+  target_compile_definitions(${EXECUTABLE_NAME} PRIVATE ENABLE_SOAP)
+  target_link_libraries(${EXECUTABLE_NAME} gsoap)
+endif()
+
+# Boost lib search path for playerbots' transitive boost references.
+# Boost's prebuilt Windows binaries live under lib64-msvc-<toolset> (or
+# BOOST_LIBRARYDIR if the user set it explicitly).
+if(WIN32 AND BUILD_PLAYERBOTS)
+    if(DEFINED ENV{BOOST_LIBRARYDIR})
+        target_link_directories(${EXECUTABLE_NAME} PRIVATE "$ENV{BOOST_LIBRARYDIR}")
+    elseif(DEFINED ENV{BOOST_ROOT})
+        # Map MSVC toolset version (e.g. 1930) to Boost's lib dir suffix
+        # ("14.3"). Falls back to 14.3 (matches Boost 1.86 prebuilt) if the
+        # heuristic doesn't resolve.
+        if(MSVC_TOOLSET_VERSION GREATER_EQUAL 143)
+            set(_boost_lib_suffix "14.3")
+        elseif(MSVC_TOOLSET_VERSION GREATER_EQUAL 142)
+            set(_boost_lib_suffix "14.2")
+        elseif(MSVC_TOOLSET_VERSION GREATER_EQUAL 141)
+            set(_boost_lib_suffix "14.1")
+        else()
+            set(_boost_lib_suffix "14.3")
+        endif()
+        target_link_directories(${EXECUTABLE_NAME} PRIVATE "$ENV{BOOST_ROOT}/lib64-msvc-${_boost_lib_suffix}")
+    endif()
+endif()
 
 
 if(WIN32)
@@ -158,6 +213,7 @@ if(UNIX)
     ${OPENSSL_LIBRARIES}
     ${OPENSSL_EXTRA_LIBRARIES}
     ${ZLIB_LIBRARIES}
+    ${CMAKE_DL_LIBS}
   )
 endif()
 
@@ -181,5 +237,18 @@ configure_file(${CMAKE_CURRENT_SOURCE_DIR}/mangosd.conf.dist.in ${CMAKE_CURRENT_
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/mangosd.conf.dist DESTINATION ${CONF_DIR})
 
 if(WIN32 AND MSVC)
-  install(FILES ${CMAKE_CURRENT_BINARY_DIR}/\${BUILD_TYPE}/${EXECUTABLE_NAME}.pdb DESTINATION ${BIN_DIR} CONFIGURATIONS Debug)
+  # Every configuration, not just Debug: a Release minidump needs the symbols
+  # just as much, and RelWithDebInfo produced a .pdb that never got installed.
+  install(FILES $<TARGET_PDB_FILE:${EXECUTABLE_NAME}> DESTINATION ${BIN_DIR} OPTIONAL)
+endif()
+
+if(MANTECH_PROFILE_ALLOCATIONS)
+  if(NOT USE_STD_MALLOC)
+    message(FATAL_ERROR "Allocation sampling requires the standard allocator configuration")
+  endif()
+  target_sources(${EXECUTABLE_NAME} PRIVATE AllocationProfile.cpp)
+  target_link_libraries(${EXECUTABLE_NAME} dbghelp)
+endif()
+if(MANTECH_DEV_DIAGNOSTICS)
+  target_link_libraries(${EXECUTABLE_NAME} psapi)
 endif()

@@ -1,3 +1,4 @@
+#include "Util/DevDiagnosticsService.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
@@ -27,6 +28,7 @@
 #include "Common.h"
 #include "World.h"
 #include "WorldRunnable.h"
+#include "ScriptObjects.h"
 #include "Timer.h"
 #include "ObjectAccessor.h"
 #include "MapManager.h"
@@ -36,12 +38,17 @@
 #include "Database/DatabaseEnv.h"
 #include "PerformanceMonitor.h"
 
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
+
 // Target server framerate is 1000/WORLD_SLEEP_CONST
 #define WORLD_SLEEP_CONST 50
 
 // Heartbeat for the World
 void WorldRunnable::operator()()
 {
+    ManTech::Diag::StartObserver();
     thread_name("World");
     // Init new SQL thread for the world database
     WorldDatabase.ThreadStart();                                // let thread do safe mySQL requests (one connection call enough)
@@ -55,6 +62,11 @@ void WorldRunnable::operator()()
     // If we update faster, then slow down!
     uint32 prevTime = WorldTimer::getMSTime();
     uint32 currTime = 0u;
+
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = sWorld.GetEluna())
+        eluna->OnStartup();
+#endif
 
     // While we have not World::m_stopEvent, update the world
     while (!World::IsStopped())
@@ -110,6 +122,10 @@ void WorldRunnable::operator()()
     }
 
     sLog.outString("Shutting down world...");
+#ifdef ENABLE_ELUNA
+    if (Eluna* eluna = sWorld.GetEluna())
+        eluna->OnShutdown();
+#endif
     sWorld.Shutdown();
 
     // unload battleground templates before different singletons destroyed
@@ -117,6 +133,10 @@ void WorldRunnable::operator()()
 
     sLog.outString("Stopping network threads...");
     sWorldSocketMgr->StopNetwork();
+    ScriptRegistry<ServerScript>::ForEachEnabledHook(SERVERHOOK_ON_NETWORK_STOP, [](ServerScript* script)
+    {
+        script->OnNetworkStop();
+    });
 
     sLog.outString("Unloading all maps...");
     sMapMgr.UnloadAll(); // unload all grids (including locked in memory)

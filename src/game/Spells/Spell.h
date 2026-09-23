@@ -3,6 +3,7 @@
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
  * Copyright (C) 2011-2016 Nostalrius <https://nostalrius.org>
  * Copyright (C) 2016-2017 Elysium Project <https://github.com/elysium-project>
+ * Copyright (C) vMaNGOS contributors <https://github.com/vmangos/core>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -234,6 +235,29 @@ class Spell
     friend void WorldObject::SetCurrentCastedSpell(Spell* pSpell );
     friend void WorldObject::MoveChannelledSpellWithCastTime(Spell* pSpell);
     public:
+        // bot sets spell->m_clientCast = true on spells it queues.
+        // Penqle has no equivalent; stub field is never read.
+        bool m_clientCast = false;
+        // SpellStart: cmangos returns SpellCastResult; Penqle uses prepare().
+        SpellCastResult SpellStart(SpellCastTargets const* targets, Aura* triggeredByAura = nullptr) {
+            return prepare(targets ? *targets : SpellCastTargets(), triggeredByAura);
+        }
+        SpellCastResult SpellStart() { return prepare(); }
+        // GetTrueCaster: cmangos's name; Penqle uses m_caster.
+        WorldObject* GetTrueCaster() const { return m_caster; }
+        // PreCastCheck: cmangos has it; Penqle uses CheckCast (private). Stub returns SPELL_CAST_OK.
+        SpellCastResult PreCastCheck() const { return SPELL_CAST_OK; }
+        // Prepare: cmangos's name; Penqle uses prepare. Forward.
+        SpellCastResult Prepare() { return prepare(); }
+        // m_ignoreCastTime: cmangos field, Penqle no equivalent. Stub for backwards-compat.
+        bool m_ignoreCastTime = false;
+        // m_effectSkillInfo: cmangos field for per-effect skill info (lockpicking etc). Stub array.
+        struct EffectSkillInfo { SkillType skillId = SKILL_NONE; int32 reqSkillValue = 0; int32 skillValue = 0; };
+        EffectSkillInfo m_effectSkillInfo[MAX_EFFECT_INDEX]{};
+        // Match the interruption state boundary; never cancel a finished spell.
+        bool CanBeInterrupted() const { return m_spellState == SPELL_STATE_PREPARING || m_spellState == SPELL_STATE_CASTING || m_spellState == SPELL_STATE_DELAYED; }
+        // GetDamage: cmangos exposes computed damage. Stub returns 0.
+        int32 GetDamage() const { return 0; }
 
         void EffectEmpty(SpellEffectIndex eff_idx);
         void EffectNULL(SpellEffectIndex eff_idx);
@@ -334,7 +358,16 @@ class Spell
 
         Spell(Unit* caster, SpellEntry const *info, bool triggered, ObjectGuid originalCasterGUID = ObjectGuid(), SpellEntry const* triggeredBy = nullptr, Unit* victim = nullptr, SpellEntry const* triggeredByParent = nullptr, bool bCanIgnoreLOS = false);
         Spell(GameObject* caster, SpellEntry const *info, bool triggered, ObjectGuid originalCasterGUID = ObjectGuid(), SpellEntry const* triggeredBy = nullptr, Unit* victim = nullptr, SpellEntry const* triggeredByParent = nullptr, bool bCanIgnoreLOS = false);
-        ~Spell();
+        // VIRTUAL. Spell::Delete() ends in `delete this` on a Spell const*,
+        // and mod-playerbots derives from this class (BotUseItemSpell adds a
+        // bool, making it 760 bytes against Spell's 752). Without a virtual
+        // destructor that delete frees the base size and leaves eight bytes
+        // behind, which corrupts the allocator's bookkeeping - found with
+        // AddressSanitizer as a new-delete-type-mismatch out of
+        // Player::Update -> EventProcessor::Update -> ~SpellEvent. The crash
+        // it caused always surfaced somewhere else entirely, whoever touched
+        // that region next.
+        virtual ~Spell();
 
         SpellCastResult prepare(SpellCastTargets targets, Aura* triggeredByAura = nullptr, uint32 chance = 0);
         SpellCastResult prepare(Aura* triggeredByAura = nullptr, uint32 chance = 0);
@@ -364,6 +397,8 @@ class Spell
         void OnSpellLaunch();
 
         SpellCastResult CheckItems();
+        // Bounds measured using GetCombatDistance, for ordinary ranged spells.
+        std::pair<float, float> GetGenericRangeBounds(bool strict, Unit* target);
         SpellCastResult CheckRange(bool strict);
         SpellCastResult CheckPower() const;
         SpellCastResult CheckCasterAuras() const;
@@ -411,6 +446,8 @@ class Spell
         //void HandleAddAura(Unit* Target);
 
         SpellEntry const* m_spellInfo;
+        SpellEntry const* GetSpellProto() const { return m_spellInfo; }
+        SpellEntry const* GetSpellInfo() const { return m_spellInfo; }
         bool m_isCustomSpell = false;
 
         bool m_addThreat = true;
@@ -487,6 +524,8 @@ class Spell
         bool IsTriggeredByAura() const { return m_triggeredByAuraSpell; }
         bool IsTriggeredByProc() const;
         bool IsCastByItem() const { return m_CastItem; }
+        // bot calls GetCastItem.
+        Item* GetCastItem() const { return m_CastItem; }
         void ForceConsumeCastItem() { m_forceConsumeItem = true; }
         void SetCastItem(Item* item)
         {
@@ -582,6 +621,8 @@ class Spell
         Corpse* GetCorpseTarget() const { return corpseTarget; }
         GameObject* GetGOTarget() const { return gameObjTarget; }
         float GetTotalEffectDamage() const { return m_damage; }
+        float GetTotalEffectHealing() const { return m_healing; }
+        void SetTotalEffectHealing(float healing) { m_healing = healing; }
         float damage = 0;
     protected:
 

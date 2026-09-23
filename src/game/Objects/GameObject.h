@@ -30,6 +30,8 @@
 #include "Util.h"
 #include <shared_mutex>
 
+class Group;
+
 // GCC have alternative #pragma pack(N) syntax and old gcc version not support pack(push,N), also any gcc version not support it at some platform
 #if defined( __GNUC__ )
 #pragma pack(1)
@@ -667,6 +669,7 @@ class Unit;
 class GameObjectAI;
 class GameObjectModel;
 class Transport;
+class Group;   // GetGroupLootRecipient - undeclared without the PCH (Camera.cpp, MSVC 2026-09-04)
 
 struct GameObjectDisplayInfoEntry;
 
@@ -687,6 +690,8 @@ class GameObject : public WorldObject
         bool Create(uint32 guidlow, uint32 name_id, Map *map, float x, float y, float z, float ang, float rotation0, float rotation1, float rotation2, float rotation3, uint32 animprogress, GOState go_state);
         void Update(uint32 update_diff, uint32 p_time) override;
         GameObjectInfo const* GetGOInfo() const { return m_goInfo; }
+        // AzerothCore spelling of the flag test on the shared object field.
+        bool HasGameObjectFlag(uint32 flags) const { return HasFlag(GAMEOBJECT_FLAGS, flags); }
 
         bool IsTransport() const;
 
@@ -745,6 +750,8 @@ class GameObject : public WorldObject
             m_respawnDelayTime = respawn;
         }
         void Respawn();
+        // bot module uses uppercase IsSpawned.
+        bool IsSpawned() const { return isSpawned(); }
         bool isSpawned() const
         {
             return m_respawnDelayTime == 0 ||
@@ -786,7 +793,11 @@ class GameObject : public WorldObject
         void Use(Unit* user);
 
         LootState getLootState() const { return m_lootState; }
+        // cmangos uses PascalCase.
+        LootState GetLootState() const { return m_lootState; }
         void SetLootState(LootState s);
+        // cmangos shorthand: GO is being interacted with.
+        bool IsInUse() const { return m_lootState == GO_ACTIVATED; }
 
         void AddToSkillupList(Player* player);
         bool IsInSkillupList(Player* player) const;
@@ -811,9 +822,20 @@ class GameObject : public WorldObject
         void AddUse() { ++m_useTimes; }
         uint32 GetUseCount() const { return m_useTimes; }
 
+        // Per-instance charge override (for talent-modified Lightwell + similar).
+        // 0 = use template's charges. >0 = override.
+        void SetChargeOverride(uint32 charges) { m_chargeOverride = charges; }
+        uint32 GetEffectiveMaxCharges() const;
+
         void SaveRespawnTime() override;
 
         Loot loot;
+        // bot accesses go->m_loot like a pointer.
+        Loot* const m_loot = &loot;
+        // GetLinkedTrap: cmangos accesses linked-trap GO. Stub returns nullptr.
+        GameObject* GetLinkedTrap() { return nullptr; }
+        Player* GetLootRecipient() const;
+        Group* GetGroupLootRecipient() const;
 
         bool HasQuest(uint32 quest_id) const override;
         bool HasInvolvedQuest(uint32 quest_id) const override;
@@ -898,6 +920,7 @@ class GameObject : public WorldObject
         GuidsSet m_SkillupSet;                              // players that already have skill-up at GO use
 
         uint32 m_useTimes;                                  // amount uses/charges triggered
+        uint32 m_chargeOverride;                            // per-instance max charges override (0 = use template)
 
         // collected only for GAMEOBJECT_TYPE_SUMMONING_RITUAL
         ObjectGuid m_firstUser;                             // first GO user, in most used cases owner, but in some cases no, for example non-summoned multi-use GAMEOBJECT_TYPE_SUMMONING_RITUAL

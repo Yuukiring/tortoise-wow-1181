@@ -25,6 +25,10 @@
 #include "Platform/Define.h"
 #include <cassert>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define MAX_SPELL_EFFECTS 3
 #define EFFECT_0          0
 #define EFFECT_1          1
@@ -78,6 +82,9 @@ enum Classes
     CLASS_ROGUE         = 4,
     CLASS_PRIEST        = 5,
     //CLASS_DEATH_KNIGHT  = 6,                              // not listed in DBC, will be in 3.0
+    // The value is named so ported code that switches on class compiles. No
+    // character on this core can hold it, so those arms are unreachable.
+    CLASS_DEATH_KNIGHT  = 6,
     CLASS_SHAMAN        = 7,
     CLASS_MAGE          = 8,
     CLASS_WARLOCK       = 9,
@@ -1746,9 +1753,10 @@ enum BattleGroundTypeId : uint32
     BATTLEGROUND_WS            = 2,
     BATTLEGROUND_AB            = 3,
     BATTLEGROUND_BR            = 4, // arena Blood Ring
-    BATTLEGROUND_SV            = 5
+    BATTLEGROUND_SV            = 5,
+    BATTLEGROUND_TG            = 6
 };
-#define MAX_BATTLEGROUND_TYPE_ID 6
+#define MAX_BATTLEGROUND_TYPE_ID 7
 
 inline BattleGroundTypeId GetBattleGroundTypeIdByMapId(uint32 mapId)
 {
@@ -1759,6 +1767,7 @@ inline BattleGroundTypeId GetBattleGroundTypeIdByMapId(uint32 mapId)
         case 529:   return BATTLEGROUND_AB;
         case 26:    return BATTLEGROUND_BR;
         case 27:    return BATTLEGROUND_SV;
+        case 821:   return BATTLEGROUND_TG;
         default:    return BATTLEGROUND_TYPE_NONE;
     }
 }
@@ -1772,6 +1781,7 @@ inline uint32 GetBattleGrounMapIdByTypeId(BattleGroundTypeId bgTypeId)
         case BATTLEGROUND_AB:   return 529;
         case BATTLEGROUND_BR:   return 26;
         case BATTLEGROUND_SV:   return 27;
+        case BATTLEGROUND_TG:   return 821;
         default:                return 0;   //none
     }
 
@@ -1888,27 +1898,119 @@ enum TicketType
 // Used for some dynamic scaling systems, depending on total population
 #define BLIZZLIKE_REALM_POPULATION 2500
 
+#include <cmath>
+
+// Dungeon difficulty arrived with The Burning Crusade. Every instance on this
+// core is the only version of itself. The type exists because Map::GetDifficulty
+// returns it and ported code compares against it; the heroic value is named so
+// those comparisons compile, and nothing here ever reports it.
+typedef int Difficulty;
+constexpr Difficulty DUNGEON_DIFFICULTY_NORMAL = 0;
+constexpr Difficulty DUNGEON_DIFFICULTY_HEROIC = 1;
+constexpr Difficulty MAX_DUNGEON_DIFFICULTY = 1;
+
 struct Position
 {
     Position() = default;
     Position(float position_x, float position_y, float position_z, float orientation) : x(position_x), y(position_y), z(position_z), o(orientation) {}
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    float o = 0.0f;
+    // AzerothCore lets the orientation default; ported code relies on it.
+    Position(float position_x, float position_y, float position_z) : x(position_x), y(position_y), z(position_z) {}
+    // Anonymous unions give the AzerothCore field names to the same storage,
+    // the way WorldLocation below already does for the cmangos names. Not
+    // references: a reference member deletes the assignment operator and
+    // Position stops being copyable.
+    union { float x = 0.0f; float m_positionX; };
+    union { float y = 0.0f; float m_positionY; };
+    union { float z = 0.0f; float m_positionZ; };
+    union { float o = 0.0f; float m_orientation; };
+
+    // cmangos/playerbots port - accessor methods that the bot module calls.
+    float GetPositionX() const { return x; }
+    float GetPositionY() const { return y; }
+    float GetPositionZ() const { return z; }
+    float GetPositionO() const { return o; }
+
+    // Returns the SQUARED 3D distance, matching cmangos convention. Callers
+    // must wrap in std::sqrt() to get the real distance. Kept as-is rather
+    // than renamed because the vendored bot code (e.g. PlayerbotAI.cpp:5334,
+    // strategy/actions/BattleGroundTactics.cpp:4109) calls it as `GetDistance`
+    // and already sqrt()s the result.
+    float GetDistance(Position const& other) const {
+        float dx = x - other.x, dy = y - other.y, dz = z - other.z;
+        return dx*dx + dy*dy + dz*dz;
+    }
+
+    // AzerothCore spellings, for module code written against that core. Unlike
+    // GetDistance above these return the real distance, not the square - that
+    // is what the name says there and what callers expect.
+    float GetOrientation() const { return o; }
+
+    float GetExactDist2d(float px, float py) const {
+        float dx = x - px, dy = y - py;
+        return std::sqrt(dx*dx + dy*dy);
+    }
+    float GetExactDist2d(Position const& p) const { return GetExactDist2d(p.x, p.y); }
+
+    float GetExactDist(float px, float py, float pz) const {
+        float dx = x - px, dy = y - py, dz = z - pz;
+        return std::sqrt(dx*dx + dy*dy + dz*dz);
+    }
+    float GetExactDist(Position const& p) const { return GetExactDist(p.x, p.y, p.z); }
+
+    void Relocate(float px, float py, float pz) { x = px; y = py; z = pz; }
+    void Relocate(float px, float py, float pz, float po) { Relocate(px, py, pz); o = po; }
+
+    float GetAngle(float px, float py) const {
+        float a = std::atan2(py - y, px - x);
+        return a < 0.0f ? a + 2.0f * float(M_PI) : a;
+    }
+    float GetAngle(Position const& p) const { return GetAngle(p.x, p.y); }
+    template<class T>
+    float GetAngle(T const* o) const { return GetAngle(o->GetPositionX(), o->GetPositionY()); }
+    float GetExactDistSq(float px, float py, float pz) const { float const d = GetExactDist(px, py, pz); return d * d; }
+    float GetExactDistSq(Position const& p) const { return GetExactDistSq(p.x, p.y, p.z); }
+    template<class T>
+    float GetExactDistSq(T const* o) const { return GetExactDistSq(o->GetPositionX(), o->GetPositionY(), o->GetPositionZ()); }
+    // AzerothCore keeps this as a static on Position: fold an angle into
+    // [0, 2pi). Values outside that range come out of arithmetic on
+    // orientations and the client rejects them.
+    static float NormalizeOrientation(float o)
+    {
+        if (o < 0.0f)
+        {
+            float const mod = std::fmod(o, 2.0f * float(M_PI));
+            return mod < 0.0f ? mod + 2.0f * float(M_PI) : mod;
+        }
+        return std::fmod(o, 2.0f * float(M_PI));
+    }
+    float GetExactDist2d(Position const* p) const { return GetExactDist2d(p->x, p->y); }
+    float GetExactDist(Position const* p) const { return GetExactDist(p->x, p->y, p->z); }
+    // Ported code also hands WorldObject-family pointers straight in. A
+    // template rather than overloads per class, because Position cannot see
+    // those types from this header.
+    template<class T>
+    float GetExactDist2d(T const* o) const { return GetExactDist2d(o->GetPositionX(), o->GetPositionY()); }
+    template<class T>
+    float GetExactDist(T const* o) const { return GetExactDist(o->GetPositionX(), o->GetPositionY(), o->GetPositionZ()); }
+
 };
 
 struct WorldLocation
 {
-    uint32 mapId = 0;
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    float o = 0.0f;
+    // cmangos/playerbots port - anonymous unions provide cmangos-style field name
+    // aliases (mapid, coord_x/y/z, orientation) sharing storage with Penqle's
+    // mapId, x, y, z, o. Both names refer to the same memory.
+    union { uint32 mapId = 0;  uint32 mapid; };
+    union { float  x = 0.0f;   float  coord_x; };
+    union { float  y = 0.0f;   float  coord_y; };
+    union { float  z = 0.0f;   float  coord_z; };
+    union { float  o = 0.0f;   float  orientation; };
     explicit WorldLocation(uint32 _mapid = 0, float _x = 0, float _y = 0, float _z = 0, float _o = 0)
         : mapId(_mapid), x(_x), y(_y), z(_z), o(_o) {}
     WorldLocation(WorldLocation const& loc)
         : mapId(loc.mapId), x(loc.x), y(loc.y), z(loc.z), o(loc.o) {}
+    WorldLocation(uint32 _mapid, Position const& pos)
+        : mapId(_mapid), x(pos.x), y(pos.y), z(pos.z), o(pos.o) {}
 
     /**
        * \brief Copies values from another WorldLocation.

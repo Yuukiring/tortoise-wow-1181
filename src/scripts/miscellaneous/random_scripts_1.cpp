@@ -2234,10 +2234,11 @@ bool QuestAccept_npc_mysterious_stranger(Player* pPlayer, Creature* pQuestGiver,
 
 bool QuestRewarded_npc_mysterious_stranger(Player* pPlayer, Creature* pQuestGiver, Quest const* pQuest)
 {
-    if (!pQuestGiver)
+    if (!pQuestGiver || !pPlayer)
         return false;
 
-    if (!pPlayer)
+    // Bots must never activate challenge modes — skip all rewards from this NPC.
+    if (Script_IsAIControlled(pPlayer))
         return false;
 
     if (pQuest->GetQuestId() == 80388) // Stay awhile and listen...
@@ -6887,6 +6888,11 @@ void AddSC_random_scripts_1()
     newscript->Name = "npc_iluria";
     newscript->pGossipHello = &GossipHello_npc_iluria;
     newscript->pGossipSelect = &GossipSelect_npc_iluria;
+    newscript->RegisterSelf();
+
+    newscript = new Script;
+    newscript->Name = "npc_teslinah";
+    newscript->pQuestAcceptNPC = &QuestAccept_npc_teslinah;
     newscript->RegisterSelf();
 
     newscript = new Script;

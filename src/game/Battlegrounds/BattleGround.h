@@ -42,8 +42,6 @@ class Player;
 class WorldPacket;
 class BattleGroundMap;
 class ChatHandler;
-class SpellInfo;
-
 struct WorldSafeLocsEntry;
 
 struct BattleGroundEventIdx
@@ -150,8 +148,9 @@ enum BattleGroundQueueTypeId
     BATTLEGROUND_QUEUE_AB       = 3,
     ARENA_QUEUE_BR              = 4,
     BATTLEGROUND_QUEUE_SV       = 5,
+    BATTLEGROUND_QUEUE_TG       = 6,
 };
-#define MAX_BATTLEGROUND_QUEUE_TYPES 6
+#define MAX_BATTLEGROUND_QUEUE_TYPES 7
 
 enum BattleGroundBracketId                                  // bracketId for level ranges
 {
@@ -291,7 +290,12 @@ class BattleGround
         // Get methods:
         char const* GetName() const         { return m_Name; }
         BattleGroundTypeId GetTypeID() const { return m_TypeID; }
+        // cmangos uses GetTypeId (lowercase d).
+        BattleGroundTypeId GetTypeId() const { return m_TypeID; }
         bool IsArena() const { return GetTypeID() == BATTLEGROUND_BR ? true : false; }
+        // cmangos generic flag carrier accessor — bot calls bg->GetFlagCarrierGuid(team_index).
+        // Default no-op base; BattleGroundWS / BattleGroundAB override / shadow.
+        virtual ObjectGuid GetFlagCarrierGuid(uint32 /*team_index*/ = 0) const { return ObjectGuid(); }
         BattleGroundBracketId GetBracketId() const { return m_BracketId; }
         // the instanceId check is also used to determine a bg-template
         // that's why the m_map hack is here..
@@ -511,7 +515,7 @@ class BattleGround
         GuidVector m_BgObjects;
         GuidVector m_BgCreatures;
         void SpawnObject(ObjectGuid guid, uint32 respawntime);
-        bool AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3);
+        bool AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3, float scale = 0.0f);
         void SpawnCreature(ObjectGuid guid, BattleGroundCreatureSpawnMode mode);
         virtual Creature* AddCreature(uint32 entry, uint32 type, float x, float y, float z, float o, TeamId teamId = TEAM_NEUTRAL, uint32 respawntime = 0, Transport* transport = nullptr);
         Creature* AddCreature(uint32 entry, uint32 type, Position const& pos, TeamId teamId = TEAM_NEUTRAL, uint32 respawntime = 0, Transport* transport = nullptr);

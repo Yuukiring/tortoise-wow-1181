@@ -86,6 +86,16 @@ struct LFGGroupQueueInfo
     uint32 groupTimer;
 };
 
+// cmangos LFG meeting-stone descriptor.
+// Penqle has no equivalent. Defined here (not in shim) so both host and bot module see complete type.
+struct MeetingStoneInfo {
+    uint32 dungeonId = 0;
+    uint32 minLevel = 0;
+    uint32 maxLevel = 0;
+    uint32 area = 0;
+    std::string name;
+};
+
 class LFGQueue
 {
     public:
@@ -95,6 +105,21 @@ class LFGQueue
         void AddToQueue(Player* leader, uint32 queAreaID);
         void RestoreOfflinePlayer(Player* player);
         bool IsPlayerInQueue(const ObjectGuid& plrGuid) const;
+        // Read access for modules: the queue entry of one player, if queued.
+        void GetPlayerQueueInfo(LFGPlayerQueueInfo* info, ObjectGuid plrGuid) const
+        {
+            auto it = m_QueuedPlayers.find(plrGuid);
+            if (it != m_QueuedPlayers.end() && info)
+                *info = it->second;
+        }
+        bool IsGroupInQueue(uint32 groupId) const { return m_QueuedGroups.find(groupId) != m_QueuedGroups.end(); }
+        bool GetGroupQueueInfo(LFGGroupQueueInfo* info, uint32 groupId) const
+        {
+            auto it = m_QueuedGroups.find(groupId);
+            if (!info || it == m_QueuedGroups.end()) return false;
+            *info = it->second;
+            return true;
+        }
         void RemovePlayerFromQueue(const ObjectGuid& plrGuid, PlayerLeaveMethod leaveMethod = PLAYER_CLIENT_LEAVE); // 0 == by default system (cmsg, leader leave), 1 == by lfg system (no need report text you left queu)
         void RemoveGroupFromQueue(uint32 groupId, GroupLeaveMethod leaveMethod = GROUP_CLIENT_LEAVE);
         void Update(uint32 diff);

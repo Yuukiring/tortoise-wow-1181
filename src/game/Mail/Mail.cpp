@@ -44,6 +44,7 @@
 #include "Item.h"
 #include "AuctionHouseMgr.h"
 #include "MasterPlayer.h"
+#include "ScriptObjects.h"
 
 /**
  * Creates a new MailSender object.
@@ -285,6 +286,11 @@ void MailDraft::SendReturnToSender(uint32 sender_acc, ObjectGuid sender_guid, Ob
  */
 void MailDraft::SendMailTo(MailReceiver const& receiver, MailSender const& sender, MailCheckMask checked, uint32 deliver_delay, uint32 expire_delay, bool direct)
 {
+    ScriptRegistry<MailScript>::ForEach([&](MailScript* script)
+    {
+        script->OnBeforeMailDraftSendMailTo(this, receiver, sender);
+    });
+
     Player* pReceiver = receiver.GetPlayer();               // can be nullptr
     MasterPlayer* masterReceiver = sObjectAccessor.FindMasterPlayer(receiver.GetPlayerGuid());
 
@@ -318,6 +324,11 @@ void MailDraft::SendMailTo(MailReceiver const& receiver, MailSender const& sende
     std::string safe_subject = GetSubject();
 
     CharacterDatabase.BeginTransaction();
+    if (m_returnSourceMailId)
+    {
+        CharacterDatabase.PExecute("UPDATE mail SET isDeleted = 1 WHERE id = %u", m_returnSourceMailId);
+        CharacterDatabase.PExecute("DELETE FROM mail_items WHERE mail_id = %u", m_returnSourceMailId);
+    }
     CharacterDatabase.escape_string(safe_subject);
     CharacterDatabase.PExecute("INSERT INTO mail (`id`, `messageType`, `stationery`, `mailTemplateId`, `sender`, `receiver`, `subject`, `itemTextId`, `has_items`, `expire_time`, `deliver_time`, `money`, `cod`, `checked`) "
                                "VALUES ('%u', '%u', '%u', '%u', '%u', '%u', '%s', '%u', '%u', '" UI64FMTD "','" UI64FMTD "', '%u', '%u', '%u')",

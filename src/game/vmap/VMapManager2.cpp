@@ -23,6 +23,7 @@
 #include "MapTree.h"
 #include "ModelInstance.h"
 #include "WorldModel.h"
+#include "Memory/MemoryLedger.h"
 #include "VMapDefinitions.h"
 
 using G3D::Vector3;
@@ -40,6 +41,7 @@ VMapManager2::VMapManager2()
 
 VMapManager2::~VMapManager2(void)
 {
+    std::unique_lock<std::shared_mutex> treeLock(m_treesLock);
     for (auto& iInstanceMapTree : iInstanceMapTrees)
         delete iInstanceMapTree.second;
 
@@ -88,8 +90,18 @@ VMAPLoadResult VMapManager2::loadMap(const char* pBasePath, unsigned int pMapId,
 //=========================================================
 // load one tile (internal use only)
 
+bool VMapManager2::isMapTileLoaded(unsigned int mapId, int x, int y) const
+{
+    if (x < 0 || x >= 64 || y < 0 || y >= 64)
+        return false;
+    std::shared_lock<std::shared_mutex> treeGuard(m_treesLock);
+    auto const tree = iInstanceMapTrees.find(mapId);
+    return tree != iInstanceMapTrees.end() && tree->second->isTileLoaded(x, y);
+}
+
 bool VMapManager2::_loadMap(unsigned int pMapId, std::string const& basePath, uint32 tileX, uint32 tileY)
 {
+    std::unique_lock<std::shared_mutex> treeLock(m_treesLock);
     InstanceTreeMap::iterator instanceTree = iInstanceMapTrees.find(pMapId);
     if (instanceTree == iInstanceMapTrees.end())
     {
@@ -112,6 +124,7 @@ bool VMapManager2::_loadMap(unsigned int pMapId, std::string const& basePath, ui
 
 void VMapManager2::unloadMap(unsigned int pMapId)
 {
+    std::unique_lock<std::shared_mutex> treeLock(m_treesLock);
     InstanceTreeMap::iterator instanceTree = iInstanceMapTrees.find(pMapId);
     if (instanceTree != iInstanceMapTrees.end())
     {
@@ -128,6 +141,7 @@ void VMapManager2::unloadMap(unsigned int pMapId)
 
 void VMapManager2::unloadMap(unsigned int  pMapId, int x, int y)
 {
+    std::unique_lock<std::shared_mutex> treeLock(m_treesLock);
     InstanceTreeMap::iterator instanceTree = iInstanceMapTrees.find(pMapId);
     if (instanceTree != iInstanceMapTrees.end())
     {
@@ -144,6 +158,7 @@ void VMapManager2::unloadMap(unsigned int  pMapId, int x, int y)
 
 bool VMapManager2::isInLineOfSight(unsigned int pMapId, float x1, float y1, float z1, float x2, float y2, float z2)
 {
+    std::shared_lock<std::shared_mutex> treeLock(m_treesLock);
     if (!isLineOfSightCalcEnabled()) return true;
     bool result = true;
     InstanceTreeMap::iterator instanceTree = iInstanceMapTrees.find(pMapId);
@@ -162,6 +177,7 @@ bool VMapManager2::isInLineOfSight(unsigned int pMapId, float x1, float y1, floa
 
 ModelInstance* VMapManager2::FindCollisionModel(unsigned int mapId, float x0, float y0, float z0, float x1, float y1, float z1)
 {
+    std::shared_lock<std::shared_mutex> treeLock(m_treesLock);
     if (!isLineOfSightCalcEnabled())
         return nullptr;
 
@@ -186,6 +202,7 @@ otherwise the result pos will be the dest pos
 */
 bool VMapManager2::getObjectHitPos(unsigned int pMapId, float x1, float y1, float z1, float x2, float y2, float z2, float& rx, float& ry, float& rz, float pModifyDist)
 {
+    std::shared_lock<std::shared_mutex> treeLock(m_treesLock);
     bool result = false;
     rx = x2;
     ry = y2;
@@ -217,6 +234,7 @@ get height or INVALID_HEIGHT if no height available
 
 float VMapManager2::getHeight(unsigned int pMapId, float x, float y, float z, float maxSearchDist)
 {
+    std::shared_lock<std::shared_mutex> treeLock(m_treesLock);
     float height = VMAP_INVALID_HEIGHT_VALUE;           // no height
     if (isHeightCalcEnabled())
     {
@@ -240,6 +258,7 @@ float VMapManager2::getHeight(unsigned int pMapId, float x, float y, float z, fl
 
 bool VMapManager2::getAreaInfo(unsigned int pMapId, float x, float y, float& z, uint32& flags, int32& adtId, int32& rootId, int32& groupId) const
 {
+    std::shared_lock<std::shared_mutex> treeLock(m_treesLock);
     bool result = false;
     InstanceTreeMap::const_iterator instanceTree = iInstanceMapTrees.find(pMapId);
     if (instanceTree != iInstanceMapTrees.end())
@@ -255,6 +274,7 @@ bool VMapManager2::getAreaInfo(unsigned int pMapId, float x, float y, float& z, 
 
 bool VMapManager2::isUnderModel(unsigned int pMapId, float x, float y, float z, float* outDist, float* inDist) const
 {
+    std::shared_lock<std::shared_mutex> treeLock(m_treesLock);
     bool result = false;
     InstanceTreeMap::const_iterator instanceTree = iInstanceMapTrees.find(pMapId);
     if (instanceTree != iInstanceMapTrees.end())
@@ -268,6 +288,7 @@ bool VMapManager2::isUnderModel(unsigned int pMapId, float x, float y, float z, 
 
 bool VMapManager2::GetLiquidLevel(uint32 pMapId, float x, float y, float z, uint8 ReqLiquidType, float& level, float& floor, uint32& type) const
 {
+    std::shared_lock<std::shared_mutex> treeLock(m_treesLock);
     InstanceTreeMap::const_iterator instanceTree = iInstanceMapTrees.find(pMapId);
     if (instanceTree != iInstanceMapTrees.end())
     {
@@ -315,12 +336,15 @@ std::shared_ptr<WorldModel> VMapManager2::acquireModelInstance(std::string const
             return nullptr;
         }
         //DEBUG_FILTER_LOG(LOG_FILTER_MAP_LOADING, "VMapManager2: loading file '%s%s'.", basepath.c_str(), filename.c_str());
+        size_t const modelBytes = worldmodel->OwnedMemoryBytes();
+        ManTech::MemoryLedger::Add(ManTech::MemoryKind::Collision, modelBytes);
         ret = std::shared_ptr<WorldModel>(
                     worldmodel,
-                    [this, filename](WorldModel* m){
+                    [this, filename, modelBytes](WorldModel* m){
                         std::unique_lock<std::shared_mutex> lock(m_modelsLock);
                         if (!getUseManagedPtrs())
                             iLoadedModelFiles.erase(filename);
+                        ManTech::MemoryLedger::Remove(ManTech::MemoryKind::Collision, modelBytes);
                         delete m;
                     });
         model = iLoadedModelFiles.emplace(filename, ManagedModel{ret, getUseManagedPtrs()}).first;

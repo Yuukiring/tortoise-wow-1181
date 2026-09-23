@@ -1,0 +1,143 @@
+// Native boundary fragments with deterministic dependencies, not live gameplay.
+#include <cstdint>
+#include <cmath>
+#define MANTECH_DIAG_SCOPE(...) ((void)0)
+#include <cstdlib>
+#include <iostream>
+#include <list>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+using uint32 = std::uint32_t;
+#define require(v) do { if (!(v)) { std::cerr << "line " << __LINE__ << ": " #v << "\n"; std::abort(); } } while(0)
+
+struct Vector3 { float x, y, z; Vector3(float a, float b, float c) : x(a), y(b), z(c) {} };
+struct PathOwner { int calls = 0; void GetSafePosition(float& x, float& y, float& z, void*) { ++calls; x=1; y=2; z=3; } };
+enum { PATHFIND_NORMAL = 1, PATHFIND_NOPATH = 8 };
+struct PathInfo {uint32 m_coordinateMapId=UINT32_MAX;
+    // This fixture checks path admission; allocation accounting has separate tests.
+    struct MemoryRefresh { PathInfo& owner; };
+    PathOwner* m_sourceUnit = nullptr;
+    void* m_transport = nullptr;
+    int m_type = PATHFIND_NORMAL;
+    std::vector<int> m_pathPoints{1,2};
+    int pathCalls = 0;
+    bool calculate(float,float,float,bool,bool);
+    bool calculate(Vector3 const&,Vector3,bool,bool);
+};
+#include "ForkPathFloat.inc"
+#include "ForkPathVectorPrefix.inc"
+    ++pathCalls; // Stand-in for the unchanged native path solver after the guard.
+    return true;
+}
+
+enum ToChannel { TO_WORLD };
+struct PlayerbotAI {};
+struct { bool enableBroadcasts = true; } sPlayerbotAIConfig;
+struct BroadcastHelper {
+    static bool BroadcastToChannelWithGlobalChance(PlayerbotAI*,std::string,std::list<std::pair<ToChannel,uint32>>);
+};
+static int sends = 0;
+#include "ForkBroadcastPrefix.inc"
+    ++sends; // Gate test only; channel routing itself is not mocked as verified.
+    return true;
+}
+
+namespace WorldTimer {
+static uint32 now = 0;
+uint32 getMSTime() { return now; }
+uint32 getMSTimeDiff(uint32 before,uint32 after) { return after-before; }
+}
+enum { ALIVE=0, DEAD=1, CLASS_HUNTER=3 };
+struct Pet { int state = ALIVE; };
+struct Bot {
+    Pet* pet = nullptr;
+    unsigned level = 60, playerClass = CLASS_HUNTER;
+    bool mounted = false;
+    unsigned GetLevel() { return level; }
+    unsigned GetClass() { return playerClass; }
+    bool IsMounted() { return mounted; }
+    Pet* GetPet() { return pet; }
+    uint32 GetGUIDLow() { return 34; }
+    uint32 GetPetGuid() { return pet ? 7 : 0; }
+};
+struct QueryResult {};
+struct {
+    int calls=0; bool exists=false;
+    QueryResult* PQuery(const char*,uint32) { ++calls; return exists ? new QueryResult : nullptr; }
+} CharacterDatabase;
+struct Facade { int GetDeathState(Pet* pet) { return pet->state; } } facade;
+#define sServerFacade facade
+struct PetIsDeadValue {
+    Bot* bot;
+    bool petDbCached=false, hasStoredPet=false;
+    uint32 lastPetDbCheckMs=0;
+    bool Calculate();
+};
+#include "ForkPetDead.inc"
+
+using ObjectGuid = int;
+struct GameObject { int map; float distance; };
+struct BannerAI {
+    std::map<int,GameObject> objects;
+    GameObject* GetGameObject(int id) { auto i=objects.find(id); return i==objects.end()?nullptr:&i->second; }
+};
+struct BannerBot {
+    bool IsWithinDistInMap(GameObject* go,float dist) { return go->map==1 && go->distance<=dist; }
+};
+struct Context {
+    std::list<ObjectGuid> ids;
+    template<class T> T* GetValue(const char* name) {
+        require(std::string(name)=="nearest game objects no los"); return &ids;
+    }
+};
+static constexpr float INTERACTION_DISTANCE=5.0f;
+static std::list<ObjectGuid> candidates(Context* context,BannerAI* ai,BannerBot* bot) {
+    std::list<ObjectGuid> closeObjects;
+#include "ForkBannerCandidates.inc"
+    return closeObjects;
+}
+
+int main() {
+    PathInfo path;
+    require(!path.calculate(4,5,6,false,false));
+    require(path.m_pathPoints.empty() && path.m_type==PATHFIND_NOPATH && path.pathCalls==0);
+    path.m_pathPoints={9}; path.m_type=PATHFIND_NORMAL;
+    require(!path.calculate(Vector3(1,2,3),Vector3(4,5,6),true,true));
+    require(path.m_pathPoints.empty() && path.m_type==PATHFIND_NOPATH && path.pathCalls==0);
+    PathOwner owner; path.m_sourceUnit=&owner;
+    require(path.calculate(4,5,6,true,true) && path.pathCalls==1 && owner.calls==1);
+
+    sPlayerbotAIConfig.enableBroadcasts=false;
+    require(!BroadcastHelper::BroadcastToChannelWithGlobalChance(nullptr,"hello",{}) && sends==0);
+    sPlayerbotAIConfig.enableBroadcasts=true;
+    require(!BroadcastHelper::BroadcastToChannelWithGlobalChance(nullptr,"",{}) && sends==0);
+    require(BroadcastHelper::BroadcastToChannelWithGlobalChance(nullptr,"hello",{}) && sends==1);
+
+    Bot bot; Pet pet; PetIsDeadValue value{&bot};
+    require(!value.Calculate() && CharacterDatabase.calls==1);
+    WorldTimer::now=29999; require(!value.Calculate() && CharacterDatabase.calls==1);
+    CharacterDatabase.exists=true; WorldTimer::now=30000;
+    require(value.Calculate() && CharacterDatabase.calls==2);
+    bot.pet=&pet; require(!value.Calculate() && !value.petDbCached && CharacterDatabase.calls==2);
+    pet.state=DEAD; require(value.Calculate() && CharacterDatabase.calls==2);
+    pet.state=ALIVE; require(!value.Calculate() && CharacterDatabase.calls==2);
+    bot.pet=nullptr; require(value.Calculate() && CharacterDatabase.calls==3);
+    value.petDbCached=false; WorldTimer::now=0xfffffff0u;
+    require(value.Calculate() && CharacterDatabase.calls==4);
+    WorldTimer::now=10; require(value.Calculate() && CharacterDatabase.calls==4);
+    WorldTimer::now=30000; require(value.Calculate() && CharacterDatabase.calls==5);
+
+    bot.level=9; value.petDbCached=false;
+    require(!value.Calculate() && CharacterDatabase.calls==5);
+    bot.level=60;bot.mounted=true;
+    require(!value.Calculate() && CharacterDatabase.calls==5);
+
+    Context context{{1,2,3,4,99}};
+    BannerAI ai{{{1,{1,1.5f}},{2,{1,5.0f}},{3,{1,5.1f}},{4,{2,1.0f}}}};
+    BannerBot player;
+    require(candidates(&context,&ai,&player)==std::list<int>({1,2}));
+    std::cout << "Fork boundary regressions passed\n";
+}

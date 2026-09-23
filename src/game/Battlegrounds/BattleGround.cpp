@@ -312,6 +312,16 @@ void BattleGround::Update(uint32 diff)
     /***           BATTLEGROUND BALLANCE SYSTEM            ***/
     /*********************************************************/
 
+    // Custom: hard time limit for WSG/AB so bot-heavy matches that never cap flags/nodes
+    // (bots standing around instead of fighting) don't run forever. Whoever leads on
+    // points/flags when the clock runs out wins, same resolution as premature-finish.
+    if (!IsArena() && GetStatus() == STATUS_IN_PROGRESS &&
+        (GetTypeID() == BATTLEGROUND_WS || GetTypeID() == BATTLEGROUND_AB) &&
+        m_StartTime > 20 * MINUTE * IN_MILLISECONDS)
+    {
+        EndBattleGround(GetWinningTeam());
+    }
+
     // if less then minimum players are in on one side, then start premature finish timer
     if (!IsArena() && GetStatus() == STATUS_IN_PROGRESS && sBattleGroundMgr.GetPrematureFinishTime() && (GetPlayersCountByTeam(ALLIANCE) < GetMinPlayersPerTeam() || GetPlayersCountByTeam(HORDE) < GetMinPlayersPerTeam()))
     {
@@ -667,6 +677,12 @@ void BattleGround::RewardExperienceToPlayers(Team winnerTeam) {
             //lower xp for BR, short BGs
             factor /= 3;
         }
+
+        if (plr->HasChallenge(CHALLENGE_HEROIC) ||
+            plr->HasChallenge(CHALLENGE_VAGRANT_MODE) ||
+            plr->HasChallenge(CHALLENGE_CRAFTMASTER) ||
+            plr->IsHardcore())
+            continue;
 
         plr->GiveXP(static_cast<uint32>(sObjectMgr.GetXPForLevel(plr->GetLevel()) * factor), nullptr);
     }
@@ -1245,7 +1261,7 @@ void BattleGround::UpdatePlayerScore(Player *Source, uint32 type, uint32 value)
     }
 }
 
-bool BattleGround::AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3)
+bool BattleGround::AddObject(uint32 type, uint32 entry, float x, float y, float z, float o, float rotation0, float rotation1, float rotation2, float rotation3, float scale)
 {
     Map* map = GetBgMap();
     if (!map)
@@ -1261,6 +1277,15 @@ bool BattleGround::AddObject(uint32 type, uint32 entry, float x, float y, float 
         sLog.outError("Cannot create gameobject template %u! BattleGround not created!", entry);
         delete go;
         return false;
+    }
+
+    // Map::Add publishes initial visibility. Instance-specific scale and its
+    // collision model must agree before the initial create packet is sent.
+    // Zero keeps the template scale for all existing battleground callers.
+    if (scale > 0.0f)
+    {
+        go->SetObjectScale(scale);
+        go->UpdateModel();
     }
 
     // add to world, so it can be later looked up from HashMapHolder
@@ -1898,6 +1923,8 @@ std::string BattleGround::TypeToString(BattleGroundTypeId type)
         return "Blood Ring";
     case BATTLEGROUND_SV:
         return "Sunnyglade Valley";
+    case BATTLEGROUND_TG:
+        return "Thorn Gorge";
     default:
         return "???";
     }

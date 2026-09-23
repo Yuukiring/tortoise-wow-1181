@@ -29,6 +29,7 @@
 #include "GuildMgr.h"
 #include "GuidObjectScaling.h"
 #include "HardcodedEvents.h"
+#include "HonorMgr.h"
 #include "InstanceData.h"
 #include "Item.h"
 #include "ItemEnchantmentMgr.h"
@@ -239,6 +240,13 @@ bool ChatHandler::HandleReloadMangosStringCommand(char* /*args*/)
     return true;
 }
 
+bool ChatHandler::HandleReloadModuleStringCommand(char* /*args*/)
+{
+    sObjectMgr.LoadModuleStrings();
+    SendSysMessage("DB tables `module_string` and `module_string_locale` reloaded.");
+    return true;
+}
+
 bool ChatHandler::HandleReloadHousingCommand(char* /*args*/)
 {
     sObjectMgr.LoadGuildHouses();
@@ -282,7 +290,9 @@ bool ChatHandler::HandleAccountSetGmLevelCommand(char* args)
     if (!ExtractInt32(&args, gm))
         return false;
 
-    if (gm < SEC_PLAYER || gm > SEC_ADMINISTRATOR)
+    // SEC_CONSOLE is reserved for the command-line console, but SEC_SIGMACHAD
+    // is a valid playable account rank and must be assignable here.
+    if (gm < SEC_PLAYER || gm > SEC_SIGMACHAD)
     {
         SendSysMessage(LANG_BAD_VALUE);
         SetSentErrorMessage(true);
@@ -983,7 +993,7 @@ bool ChatHandler::HandleListAurasCommand(char* /*args*/)
             {
                 PSendSysMessage(LANG_COMMAND_TARGET_AURADETAIL, holder->GetId(), aur->GetEffIndex(),
                     aur->GetModifier()->m_auraname, aur->GetAuraDuration(), aur->GetAuraMaxDuration(), aur->GetAuraPeriodicTimer(), aur->GetStackAmount(),
-                    name,
+                    name.c_str(),           // std::string through a printf vararg is an error under clang
                     (holder->IsPassive() ? passiveStr : ""), (talent ? talentStr : ""),
                     holder->GetCasterGuid().GetString().c_str());
             }
@@ -2636,7 +2646,7 @@ bool ChatHandler::HandleGuildHouseCommand(char* args)
     {
         CharacterDatabase.PExecute("REPLACE INTO guild_house VALUES (%u, %u, %f, %f, %f, %f);",
             guild_id, player->GetMapId(), player->GetPositionX(), player->GetPositionY(), player->GetPositionZ(), player->GetOrientation());
-        PSendSysMessage("The guild house teleport for %s was created.", sGuildMgr.GetGuildNameById(guild_id));
+        PSendSysMessage("The guild house teleport for %s was created.", sGuildMgr.GetGuildNameById(guild_id).c_str());
     }
     else
     {
@@ -5341,7 +5351,7 @@ bool ChatHandler::HandleInstanceStatsCommand(char* /*args*/)
 bool ChatHandler::HandleGMListFullCommand(char* /*args*/)
 {
     ///- Get the accounts with GM Level >0
-    QueryResult *result = LoginDatabase.Query("SELECT username, rank FROM account"
+    QueryResult *result = LoginDatabase.Query("SELECT username, `rank` FROM account"
                           " WHERE rank > 0");
     if (result)
     {
@@ -6697,6 +6707,28 @@ bool ChatHandler::HandleGMCommand(char* args)
         m_session->SendNotification(LANG_GM_OFF);
     }
 
+    return true;
+}
+
+// Enable/disable free flight for the selected player, or the issuing player
+// when no player target is selected. The Turtle player implementation already
+// owns the movement flags and heartbeat update; the command was simply absent.
+bool ChatHandler::HandleGMFlyCommand(char* args)
+{
+    bool value;
+    if (!ExtractOnOff(&args, value))
+    {
+        SendSysMessage(LANG_USE_BOL);
+        SetSentErrorMessage(true);
+        return false;
+    }
+
+    Player* target = GetSelectedPlayer();
+    if (!target)
+        target = m_session->GetPlayer();
+
+    target->SetFly(value);
+    PSendSysMessage(LANG_COMMAND_FLYMODE_STATUS, GetNameLink(target).c_str(), value ? "on" : "off");
     return true;
 }
 
@@ -11566,7 +11598,13 @@ bool ChatHandler::HandleModifyHonorCommand(char* args)
         return false;
 
     // hack code
-    if (hasStringAbbr(field, "points"))
+    if (hasStringAbbr(field, "currency"))
+    {
+        target->GetHonorMgr().ModifySpendableHonor(amount);
+        PSendSysMessage("Honor currency of %s is now %u.", target->GetName(), target->GetHonorMgr().GetSpendableHonor());
+        return true;
+    }
+    else if (hasStringAbbr(field, "points"))
     {
         if (amount < 0 || amount > 255)
             return false;
@@ -11645,11 +11683,18 @@ bool ChatHandler::HandleKickPlayerCommand(char* args)
 
     // send before target pointer invalidate
     PSendSysMessage(LANG_COMMAND_KICKMESSAGE, GetNameLink(target).c_str());
+    WorldSession* targetSession = target->GetSession();
+    if (targetSession->IsHeadless())
+    {
+        sWorld.StopHeadlessSession(target->GetObjectGuid(), true);
+        return true;
+    }
+
     // First kick: close socket but keep player online
-    if (target->GetSession()->IsConnected())
-        target->GetSession()->KickPlayer();
+    if (targetSession->IsConnected())
+        targetSession->KickPlayer();
     else
-        target->GetSession()->KickDisconnectedFromWorld();
+        targetSession->KickDisconnectedFromWorld();
 
     return true;
 }
@@ -19071,16 +19116,16 @@ bool ChatHandler::HandleWarEffortSetStageCommand(char* args)
 bool ChatHandler::HandlePerfStatsCommand(char* args)
 {
     SendSysMessage("Showing performance statistics:");
-    PSendSysMessage("Total Units: %i", PerfStats::g_totalUnits);
-    PSendSysMessage("Total Creatures: %i", PerfStats::g_totalCreatures);
-    PSendSysMessage("Total Pets: %i", PerfStats::g_totalPets);
-    PSendSysMessage("Total Players: %i", PerfStats::g_totalPlayers);
-    PSendSysMessage("Total Corpses: %i", PerfStats::g_totalCorpses);
-    PSendSysMessage("Total Items: %i", PerfStats::g_totalItems);
-    PSendSysMessage("Total GameObjects: %i", PerfStats::g_totalGameObjects);
-    PSendSysMessage("Total DynamicObjects: %i", PerfStats::g_totalDynamicObjects);
-    PSendSysMessage("Total QueryResults: %i", PerfStats::g_totalQueryResults);
-    PSendSysMessage("Total Maps: %i", PerfStats::g_totalMaps);
+    PSendSysMessage("Total Units: %i", PerfStats::g_totalUnits.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Creatures: %i", PerfStats::g_totalCreatures.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Pets: %i", PerfStats::g_totalPets.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Players: %i", PerfStats::g_totalPlayers.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Corpses: %i", PerfStats::g_totalCorpses.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Items: %i", PerfStats::g_totalItems.load(std::memory_order_relaxed));
+    PSendSysMessage("Total GameObjects: %i", PerfStats::g_totalGameObjects.load(std::memory_order_relaxed));
+    PSendSysMessage("Total DynamicObjects: %i", PerfStats::g_totalDynamicObjects.load(std::memory_order_relaxed));
+    PSendSysMessage("Total QueryResults: %i", PerfStats::g_totalQueryResults.load(std::memory_order_relaxed));
+    PSendSysMessage("Total Maps: %i", PerfStats::g_totalMaps.load(std::memory_order_relaxed));
     PSendSysMessage("Slowest Map: %i (%i ms)", PerfStats::g_slowestMapId, PerfStats::g_slowestMapUpdateTime);
 
     return true;

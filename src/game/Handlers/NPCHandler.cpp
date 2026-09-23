@@ -39,6 +39,9 @@
 #include "GuildMgr.h"
 #include "Chat.h"
 #include "CharacterDatabaseCache.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 enum StableResultCode
 {
@@ -327,7 +330,24 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPacket & recv_data)
         return;
     }
 
-    SpellEntry const *proto = sSpellMgr.GetSpellEntry(trainer_spell->spell);
+    SpellEntry const* proto = sSpellMgr.GetSpellEntry(trainer_spell->spell);
+    bool const teachesPet = proto && proto->Effect[EFFECT_INDEX_0] == SPELL_EFFECT_LEARN_PET_SPELL;
+    uint32 const learnedSpellId = proto ? proto->EffectTriggerSpell[EFFECT_INDEX_0] : 0;
+    SpellEntry const* learnedSpellInfo = learnedSpellId ? sSpellMgr.GetSpellEntry(learnedSpellId) : nullptr;
+
+    // Trainer rows can teach either a player spell or a pet spell. A successful
+    // prepare() only means that the service cast was
+    // accepted; it does not prove that its learn effect executed. Charging on
+    // that result allowed a broken or interrupted wrapper cast to take money
+    // repeatedly while leaving the spell unlearned.
+    if (!proto || (proto->Effect[EFFECT_INDEX_0] != SPELL_EFFECT_LEARN_SPELL && !teachesPet) ||
+            !learnedSpellInfo || !SpellMgr::IsSpellValid(learnedSpellInfo, _player, false))
+    {
+        sLog.outError("HandleTrainerBuySpellOpcode: trainer %s has invalid training service %u (learned spell %u).",
+            guid.GetString().c_str(), trainer_spell->spell, learnedSpellId);
+        SendTrainingFailure(guid, spellId, TRAIN_FAIL_UNAVAILABLE);
+        return;
+    }
 
     // Apply reputation discount.
     uint32 nSpellCost = uint32(floor(trainer_spell->spellCost * _player->GetReputationPriceDiscount(unit)));
@@ -339,30 +359,72 @@ void WorldSession::HandleTrainerBuySpellOpcode(WorldPacket & recv_data)
         return;
     }
 
-    // All is good. Spell can be learned if we reach this point.
+    // All validation has passed. Teach first and commit the payment only after
+    // the authoritative player spell map confirms the postcondition. Map packet
+    // processing is serialized, so a repeated click observes the learned spell
+    // as gray and cannot charge twice.
     _player->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TALK);
     _player->RemoveSpellsCausingAura(SPELL_AURA_MOUNTED);
 
-    Spell *spell;
-    if (proto->SpellVisual == 222)
-        spell = new Spell(_player, proto, false);
-    else
-        spell = new Spell(unit, proto, false);
-
-    SpellCastTargets targets;
-    targets.setUnitTarget(_player);
-
-    SpellCastResult cast_result = spell->prepare(std::move(targets));
-    spell->update(1); // Update the spell right now. Prevents desynch => take twice the money if you click really fast.
-
-    // Only charge player if cast of learning spell was successful.
-    if (cast_result == SPELL_CAST_OK)
+    if (teachesPet)
     {
+        Pet* pet = _player->GetPet();
+        if (!pet || pet->HasSpell(learnedSpellId))
+        {
+            SendTrainingFailure(guid, spellId, TRAIN_FAIL_UNAVAILABLE);
+            return;
+        }
+
+        // EffectLearnPetSpell requires the owner as caster. Use the native,
+        // non-triggered cast so CheckCast validates pet level, active spell
+        // capacity and training points. The effect owns learning, TP debit,
+        // pet persistence and the client's pet spellbook refresh.
+        Spell* spell = new Spell(_player, proto, false);
+        SpellCastTargets targets;
+        targets.setUnitTarget(_player);
+        SpellCastResult const result = spell->prepare(std::move(targets));
+        if (result == SPELL_CAST_OK)
+            spell->update(1); // Existing trainer path: finish instant services now.
+
+        pet = _player->GetPet();
+        if (result != SPELL_CAST_OK || !pet || !pet->HasSpell(learnedSpellId))
+        {
+            // A non-instant or otherwise incomplete service must not teach
+            // later for free after reporting failure. SpellEvent owns deletion.
+            spell->cancel();
+            sLog.outError("HandleTrainerBuySpellOpcode: %s failed pet training service %u from %s (cast result %u); no money charged.",
+                _player->GetGuidStr().c_str(), spellId, guid.GetString().c_str(), uint32(result));
+            SendTrainingFailure(guid, spellId, TRAIN_FAIL_UNAVAILABLE);
+            return;
+        }
+
         _player->ModifyMoney(-int32(nSpellCost));
         SendTrainingSuccess(guid, spellId);
+        return; // Native service cast already supplies its feedback.
     }
-    else
+
+    _player->LearnSpell(learnedSpellId, false);
+    if (!_player->HasSpell(learnedSpellId))
+    {
+        sLog.outError("HandleTrainerBuySpellOpcode: %s failed to learn spell %u from trainer %s; no money charged.",
+            _player->GetGuidStr().c_str(), learnedSpellId, guid.GetString().c_str());
         SendTrainingFailure(guid, spellId, TRAIN_FAIL_UNAVAILABLE);
+        return;
+    }
+
+    _player->ModifyMoney(-int32(nSpellCost));
+    SendTrainingSuccess(guid, spellId);
+
+    // Preserve the normal trainer feedback without relying on the learning
+    // wrapper spell for game state.
+    SendPlaySpellVisual(guid, 0xB3);
+    WorldPacket impact(SMSG_PLAY_SPELL_IMPACT, 12);
+    impact << _player->GetObjectGuid();
+    impact << uint32(0x016A);
+    SendPacket(&impact);
+
+    DEBUG_LOG("Trainer purchase: %s learned spell %u through service %u from %s for %u copper.",
+        _player->GetGuidStr().c_str(), learnedSpellId, spellId, guid.GetString().c_str(), nSpellCost);
 }
 
 void WorldSession::HandleGossipHelloOpcode(WorldPacket & recv_data)
@@ -378,6 +440,8 @@ void WorldSession::HandleGossipHelloOpcode(WorldPacket & recv_data)
         DEBUG_LOG("WORLD: HandleGossipHelloOpcode - %s not found or you can't interact with him.", guid.GetString().c_str());
         return;
     }
+
+    m_currentGossipGUID = guid;
 
     GetPlayer()->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TALK); // Removes stealth, feign death ...
 
@@ -454,6 +518,19 @@ void WorldSession::HandleGossipSelectOptionOpcode(WorldPacket & recv_data)
         if (!sScriptMgr.OnGossipSelect(_player, pGo, sender, action, code.empty() ? nullptr : code.c_str()))
             _player->OnGossipSelect(pGo, gossipListId);
     }
+#ifdef ENABLE_ELUNA
+    else if (guid.IsItem())
+    {
+        if (Item* item = GetPlayer()->GetItemByGuid(guid))
+            if (Eluna* e = GetPlayer()->GetEluna())
+                e->HandleGossipSelectOption(GetPlayer(), item, sender, action, code);
+    }
+    else if (guid.IsPlayer() && guid == GetPlayer()->GetObjectGuid())
+    {
+        if (Eluna* e = GetPlayer()->GetEluna())
+            e->HandleGossipSelectOption(GetPlayer(), GetPlayer()->PlayerTalkClass->GetGossipMenu().GetMenuId(), sender, action, code);
+    }
+#endif
 }
 
 void WorldSession::HandleSpiritHealerActivateOpcode(WorldPacket & recv_data)
@@ -479,6 +556,8 @@ void WorldSession::HandleSpiritHealerActivateOpcode(WorldPacket & recv_data)
 void WorldSession::SendSpiritResurrect()
 {
     _player->ResurrectPlayer(0.5f, true);
+    if (!_player->IsAlive())
+        return;
 
     _player->DurabilityLossAll(0.25f, true);
 

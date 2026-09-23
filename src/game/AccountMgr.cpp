@@ -213,6 +213,7 @@ void AccountMgr::LoadGmLevels()
         case SEC_DEVELOPER:
         case SEC_ADMINISTRATOR:
         case SEC_SIGMACHAD:
+        case SEC_CONSOLE:
             if (m_accountSecurity.find(accountId) == m_accountSecurity.end() ||
                 m_accountSecurity[accountId] < secu)
                 m_accountSecurity[accountId] = secu;
@@ -255,6 +256,34 @@ AccountTypes AccountMgr::GetSecurity(uint32 acc_id)
     return it->second;
 }
 
+AccountTypes AccountMgr::GetSecurityFromDatabase(uint32 acc_id)
+{
+    std::unique_ptr<QueryResult> result(LoginDatabase.PQuery("SELECT `rank` FROM `account` WHERE `id` = '%u'", acc_id));
+    if (!result)
+        return SEC_PLAYER;
+
+    AccountTypes const secu = AccountTypes(result->Fetch()[0].GetUInt32());
+    switch (secu)
+    {
+    case SEC_OBSERVER:
+    case SEC_MODERATOR:
+    case SEC_DEVELOPER:
+    case SEC_ADMINISTRATOR:
+    case SEC_SIGMACHAD:
+        return secu;
+    default:
+        // Same set LoadGmLevels accepts; any other value is a player.
+        return SEC_PLAYER;
+    }
+}
+
+bool AccountMgr::IsAccountBannedInDatabase(uint32 acc_id)
+{
+    std::unique_ptr<QueryResult> result(LoginDatabase.PQuery(
+        "SELECT 1 FROM `account_banned` WHERE `id` = '%u' AND `active` = 1 AND (`unbandate` > UNIX_TIMESTAMP() OR `unbandate` = `bandate`) LIMIT 1", acc_id));
+    return result != nullptr;
+}
+
 void AccountMgr::SetSecurity(uint32 accId, AccountTypes sec)
 {
     m_accountSecurity[accId] = sec;
@@ -264,7 +293,12 @@ void AccountMgr::SetSecurity(uint32 accId, AccountTypes sec)
 bool AccountMgr::GetName(uint32 acc_id, std::string &name)
 {
     auto itr = m_accountData.find(acc_id);
-    if (itr != m_accountData.end())
+    // Only trust a cached name when it is actually populated. Several loaders
+    // (LastIP on login, bans, e-mail, ...) create an m_accountData entry via
+    // operator[] with an empty Username; GetName then returned that empty name,
+    // so ChangePassword hashed SHA1(":"+pass) and silently locked the account
+    // out while reporting success. Fall through to the DB, which has the name.
+    if (itr != m_accountData.end() && !itr->second.Username.empty())
     {
         name = itr->second.Username;
         return true;

@@ -23,12 +23,18 @@
 #include "Spell.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "Player.h"
 #include "Totem.h"
 #include "GridSearchers.h"
 
 CreatureAI::~CreatureAI()
 {
 }
+
+// cmangos puts ReactState on AI; forward to Creature.
+ReactStates CreatureAI::GetReactState() const { return m_creature ? m_creature->GetReactState() : REACT_PASSIVE; }
+void CreatureAI::SetReactState(ReactStates st) { if (m_creature) m_creature->SetReactState(st); }
+bool CreatureAI::HasReactState(ReactStates st) const { return m_creature && m_creature->HasReactState(st); }
 
 void CreatureAI::JustRespawned()
 {
@@ -141,6 +147,11 @@ CanCastResult CreatureAI::DoCastSpellIfCan(Unit* pTarget, uint32 uiSpell, uint32
                 if (pTarget->HasAura(uiSpell))
                     return CAST_FAIL_TARGET_AURA;
             }
+
+            if ((uiCastFlags & CF_IGNORE_HARDCORE_TARGETS) && pSpell->IsCharmSpell())
+                if (Player* playerTarget = pTarget->ToPlayer())
+                    if (playerTarget->IsHardcore())
+                        return CAST_FAIL_OTHER;
 
             // Check if cannot cast spell
             if (!(uiCastFlags & CF_FORCE_CAST))

@@ -3,6 +3,7 @@
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
  * Copyright (C) 2011-2016 Nostalrius <https://nostalrius.org>
  * Copyright (C) 2016-2017 Elysium Project <https://github.com/elysium-project>
+ * Copyright (C) vMaNGOS contributors <https://github.com/vmangos/core>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -23,8 +24,10 @@
 #define MANGOS_SPELLAURAS_H
 
 #include "SpellAuraDefines.h"
+#include "UnitDefines.h"
 #include "DBCEnums.h"
 #include "ObjectGuid.h"
+#include "UnitDefines.h"
 #include <vector>
 
 /**
@@ -75,8 +78,11 @@ struct HeartBeatData
 };
 
 class Unit;
+class Player;
 class Item;
 class WorldObject;
+class Player;
+class DynamicObject;
 class SpellEntry;
 struct AuraScript;
 struct SpellModifier;
@@ -145,6 +151,7 @@ class SpellAuraHolder
         // FIN NOSTALRIUS
 
         bool IsPermanent() const { return m_permanent; }
+        bool CanDeferIdleUpdate() const;
         void SetPermanent(bool permanent) { m_permanent = permanent; }
         bool IsPassive() const { return m_isPassive; }
         void SetPassive(bool on) { m_isPassive = on; }
@@ -159,6 +166,11 @@ class SpellAuraHolder
         void SetRemovedOnShapeLost(bool removed) { m_isRemovedOnShapeLost = removed; }
         bool IsInUse() const { return m_in_use;}
         bool IsDeleted() const { return m_deleted;}
+        // AzerothCore spellings. IsRemoved is the same question as IsDeleted;
+        // IsExpired asks whether a timed aura has run out - a permanent one
+        // never has.
+        bool IsRemoved() const { return IsDeleted(); }
+        bool IsExpired() const { return !IsPermanent() && GetAuraDuration() <= 0; }
         bool IsEmptyHolder() const;
 
         void SetDeleted() { m_deleted = true; }
@@ -213,6 +225,7 @@ class SpellAuraHolder
         }
 
         time_t GetAuraApplyTime() const { return m_applyTime; }
+        uint32 GetAuraApplyMSTime() const { return m_applyMSTime; }
 
         void SetRemoveMode(AuraRemoveMode mode) { m_removeMode = mode; }
         AuraRemoveMode GetRemoveMode() const { return m_removeMode; }
@@ -231,7 +244,7 @@ class SpellAuraHolder
 
         void UpdateAuraDuration() const;
 
-        void SetAura(uint32 slot, bool remove) { m_target->SetUInt32Value(UNIT_FIELD_AURA + slot, remove ? 0 : GetId()); }
+        void SetAura(uint32 slot, bool remove);
         void SetAuraFlag(uint32 slot, bool add);
         void SetAuraLevel(uint32 slot, uint32 level);
 
@@ -254,6 +267,7 @@ class SpellAuraHolder
         ObjectGuid m_realCasterGuid;
         ObjectGuid m_castItemGuid;                          // it is NOT safe to keep a pointer to the item because it may get deleted
         time_t m_applyTime;
+        uint32 m_applyMSTime = 0;
 
         SpellEntry const* m_spellProto;
         AuraScript* m_auraScript;
@@ -459,6 +473,10 @@ class Aura
         int32 GetMiscValue() const { return m_spellAuraHolder->GetSpellProto()->EffectMiscValue[m_effIndex]; }
 
         SpellEntry const* GetSpellProto() const { return GetHolder()->GetSpellProto(); }
+        // AzerothCore asks these of the Aura; here the state lives on the
+        // holder, which is what actually gets deleted and timed.
+        bool IsRemoved() const { return GetHolder()->IsDeleted(); }
+        bool IsExpired() const { return GetHolder()->IsExpired(); }
         uint32 GetId() const{ return GetHolder()->GetSpellProto()->Id; }
         ObjectGuid const& GetCastItemGuid() const { return GetHolder()->GetCastItemGuid(); }
         ObjectGuid const& GetCasterGuid() const { return GetHolder()->GetCasterGuid(); }

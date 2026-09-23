@@ -1,8 +1,10 @@
+#include "Util/DevDiagnostics.h"
 /*
  * Copyright (C) 2005-2011 MaNGOS <http://getmangos.com/>
  * Copyright (C) 2009-2011 MaNGOSZero <https://github.com/mangos/zero>
  * Copyright (C) 2011-2016 Nostalrius <https://nostalrius.org>
  * Copyright (C) 2016-2017 Elysium Project <https://github.com/elysium-project>
+ * Copyright (C) vMaNGOS contributors <https://github.com/vmangos/core>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -35,6 +37,7 @@
 #include "ScriptMgr.h"
 #include "Player.h"
 #include "Pet.h"
+#include "Totem.h"
 #include "DynamicObject.h"
 #include "Group.h"
 #include "UpdateData.h"
@@ -55,6 +58,7 @@
 #include "Unit.h"
 #include "MountManager.hpp"
 #include "CompanionManager.hpp"
+#include "ScriptObjects.h"
 
 #include <memory>
 
@@ -1445,6 +1449,8 @@ void Spell::DoAllEffectOnTarget(TargetInfo *target)
         }
 
         int32 gain = pCaster->DealHeal(unitTarget, addhealth, m_spellInfo, crit);
+        if (m_spellScript)
+            m_spellScript->OnAfterHeal(this, unitTarget, addhealth, gain, crit);
 
         float classThreatModifier = pRealUnitCaster && pRealUnitCaster->GetClass() == CLASS_PALADIN ? 0.25f : 0.5f;
 
@@ -3676,6 +3682,12 @@ SpellCastResult Spell::prepare(Aura* triggeredByAura, uint32 chance)
 
 void Spell::cancel()
 {
+    // Player-cast, object-originated = a summoning ritual's spell (the altar).
+    // The caster check keeps battleground flag spells (cast BY the object) out.
+    if (m_originalCasterGUID.IsGameObject() && m_caster && m_caster->IsPlayer())
+        sLog.outInfo("[GO] spell %u for %s cancelled in state %u by caster %s",
+                     m_spellInfo->Id, m_originalCasterGUID.GetString().c_str(), uint32(m_spellState),
+                     m_caster ? m_caster->GetName() : "?");
     if (m_spellState == SPELL_STATE_FINISHED)
         return;
 
@@ -3763,6 +3775,14 @@ void Spell::cancel()
 
 void Spell::cast(bool skipCheck)
 {
+    // Include attempted casts rejected by the native spell-ID guard below.
+    ScriptRegistry<AllSpellScript>::ForEach([&](AllSpellScript* script)
+    {
+        ObjectGuid target = m_targets.getUnitTargetGuid();
+        if (!target) target = m_targets.getGOTargetGuid();
+        script->OnCastAttempt(m_caster, m_spellInfo->Id, target.GetRawValue(), m_casttime);
+    });
+
     if (m_spellInfo->Id <= 0 || m_spellInfo->Id > MAX_SPELL_ID)
         return;
 
@@ -3867,6 +3887,14 @@ void Spell::cast(bool skipCheck)
 
     if (m_spellScript)
         m_spellScript->OnCast(this);
+
+    if (Player* playerCaster = m_caster->ToPlayer())
+    {
+        ScriptRegistry<PlayerScript>::ForEachEnabledHook(PLAYERHOOK_ON_SPELL_CAST, [&](PlayerScript* script)
+        {
+            script->OnSpellCast(playerCaster, this, skipCheck);
+        });
+    }
 
     // CAST SPELL
     // Remove any remaining invis auras on cast completion, should only be gnomish cloaking device
@@ -4163,6 +4191,7 @@ void Spell::SendSpellCooldown()
 
 void Spell::update(uint32 difftime)
 {
+    MANTECH_DIAG_SCOPE(Spell, 32, "spell_update");
     // update pointers based at it's GUIDs
     UpdatePointers();
 
@@ -4228,8 +4257,15 @@ void Spell::update(uint32 difftime)
             // triggered spell
             if (pGo->GetGoType() == GAMEOBJECT_TYPE_SUMMONING_RITUAL &&
                 m_spellInfo->Id == pInfo->summoningRitual.spellId &&
-                // too many helpers cancelled
-                (pGo->GetUniqueUseCount() < pInfo->summoningRitual.reqParticipants ||
+                // too many helpers cancelled. Only for a summoner's own, temporary
+                // ritual (warlock portal): a PERSISTENT world altar with no owner
+                // (Uldaman's Altar of the Keepers / of Archaedas, 130511 / 133234)
+                // fires on the third click and must not depend on the clickers
+                // keeping their channel visual up for the 5 s cast - bot clickers
+                // drop it within ~200 ms and every ritual was cancelled in the
+                // same second it completed (19 of 19 on 2026-09-04).
+                ((!pInfo->summoningRitual.ritualPersistent &&
+                  pGo->GetUniqueUseCount() < pInfo->summoningRitual.reqParticipants) ||
                 // the warlock cancelled
                 (!pInfo->summoningRitual.ritualPersistent && !pGo->GetOwner())))
             {
@@ -4432,6 +4468,7 @@ void Spell::HandleAddTargetTriggerAuras()
             // Calculate chance at that moment (can be depend for example from combo points)
             int32 auraBasePoints = targetTrigger->GetBasePoints();
             int32 chance = m_casterUnit->CalculateSpellDamage(target, auraSpellInfo, auraSpellIdx, &auraBasePoints);
+
             if ((m_casterUnit->IsPlayer() && m_casterUnit->ToPlayer()->HasOption(PLAYER_CHEAT_ALWAYS_PROC)) || roll_chance_i(chance))
                 m_casterUnit->CastSpell(target, triggerSpellInfo, true, nullptr, targetTrigger);
         }
@@ -4440,6 +4477,14 @@ void Spell::HandleAddTargetTriggerAuras()
 
 void Spell::finish(bool ok)
 {
+    // Rituals: the altar spell (a real cast with cast time, e.g. Uldaman's
+    // 11568) is fired through GameObject::Use with the object as original
+    // caster. With bot parties it completed and nothing followed; name the
+    // cast that ended without its effects (2026-09-04).
+    if (!ok && m_originalCasterGUID.IsGameObject() && m_caster && m_caster->IsPlayer())
+        sLog.outInfo("[GO] spell %u for %s ended without effect: state %u, caster %s, casttime %d",
+                     m_spellInfo->Id, m_originalCasterGUID.GetString().c_str(), uint32(m_spellState),
+                     m_caster ? m_caster->GetName() : "?", m_casttime);
     m_successCast = ok;
 
     if (!m_caster)
@@ -4449,6 +4494,11 @@ void Spell::finish(bool ok)
         return;
 
     m_spellState = SPELL_STATE_FINISHED;
+
+    ScriptRegistry<AllSpellScript>::ForEach([&](AllSpellScript* script)
+    {
+        script->OnCastFinished(m_caster, m_spellInfo->Id, ok);
+    });
 
     // Clear the creature's casting target so it faces victim
     if (m_setCreatureTarget)
@@ -4502,7 +4552,14 @@ void Spell::finish(bool ok)
             }
         }
         if (needDrop)
-            ((Player*)m_caster)->ClearComboPoints();
+        {
+            Player* player = (Player*)m_caster;
+            uint8 const comboPoints = player->GetComboPoints();
+            if (comboPoints && m_spellScript)
+                m_spellScript->OnComboPointsSpent(this, comboPoints);
+
+            player->ClearComboPoints();
+        }
     }
 
     // call triggered spell only at successful cast (after clear combo points -> for add some if need)
@@ -5513,7 +5570,8 @@ SpellCastResult Spell::CheckCast(bool strict)
         return SPELL_CAST_OK;
 
     // Prevent casting while sitting unless the spell allows it
-    if (!m_IsTriggeredSpell && m_casterUnit && !m_casterUnit->IsStandingUp() && !(m_spellInfo->Attributes & SPELL_ATTR_CASTABLE_WHILE_SITTING))
+    if (!m_IsTriggeredSpell && m_casterUnit && !m_casterUnit->IsStandingUp() &&
+            !(m_spellInfo->Attributes & SPELL_ATTR_CASTABLE_WHILE_SITTING) && !m_spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
         return SPELL_FAILED_NOT_STANDING;
     
     /*  Check cooldowns to prevent cheating (ignore passive spells, that client side visual only)
@@ -6072,9 +6130,10 @@ SpellCastResult Spell::CheckCast(bool strict)
                     return SPELL_FAILED_DONT_REPORT;
                 }
 
+                // Taming preserves native pet, charm and persisted-pet checks.
+                // cmangos's bot guard relies on isRealPlayer(); not needed here.
                 if (plrCaster->GetPetGuid() || plrCaster->GetCharmGuid() ||
-                   (!plrCaster->GetSession()->GetBot() &&
-                    sCharacterDatabaseCache.GetCharacterPetByOwner(plrCaster->GetGUIDLow())))
+                   sCharacterDatabaseCache.GetCharacterPetByOwner(plrCaster->GetGUIDLow()))
                 {
                     plrCaster->SendPetTameFailure(PETTAME_ANOTHERSUMMONACTIVE);
                     return SPELL_FAILED_DONT_REPORT;
@@ -7015,6 +7074,29 @@ bool Spell::CanAutoCast(Unit* target)
     return false;                                           //target invalid
 }
 
+std::pair<float, float> Spell::GetGenericRangeBounds(bool strict, Unit* target)
+{
+    // Add up to ~5 yds "give" for non strict (landing) check and leeway bonus if both units are moving
+    const float leeway = GetAffectiveCaster() ? GetAffectiveCaster()->GetLeewayBonusRange(target, true) : 0.0f;
+    float const range_mod = (strict ? (m_caster->IsPlayer() ? 1.25f : 0.0f) : (m_caster->IsPlayer() ? 6.25f : 2.25f)) + leeway;
+
+    SpellRangeEntry const* srange = sSpellRangeStore.LookupEntry(m_spellInfo->rangeIndex);
+    float max_range = GetSpellMaxRange(srange);
+    float min_range = GetSpellMinRange(srange);
+
+    if (m_casterUnit)
+    {
+        if (Player* modOwner = m_casterUnit->GetSpellModOwner())
+            modOwner->ApplySpellMod(m_spellInfo->Id, SPELLMOD_RANGE, max_range, this);
+
+        max_range += m_casterUnit->GetTotalAuraRangeModifier(SPELL_AURA_MOD_ATTACK_AND_SPELL_RANGE) / 1000.0f;
+    }
+
+    max_range += range_mod;
+
+    return {min_range, max_range};
+}
+
 SpellCastResult Spell::CheckRange(bool strict)
 {
     Unit *target = m_targets.getUnitTarget();
@@ -7063,23 +7145,9 @@ SpellCastResult Spell::CheckRange(bool strict)
         }
     }
 
-    // Add up to ~5 yds "give" for non strict (landing) check and leeway bonus if both units are moving
-    const float leeway = GetAffectiveCaster() ? GetAffectiveCaster()->GetLeewayBonusRange(target, true) : 0.0f;
-    float const range_mod = (strict ? (m_caster->IsPlayer() ? 1.25f : 0.0f) : (m_caster->IsPlayer() ? 6.25f : 2.25f)) + leeway;
-
-    SpellRangeEntry const* srange = sSpellRangeStore.LookupEntry(m_spellInfo->rangeIndex);
-    float max_range = GetSpellMaxRange(srange);
-    float min_range = GetSpellMinRange(srange);
-
-    if (m_casterUnit)
-    {
-        if (Player* modOwner = m_casterUnit->GetSpellModOwner())
-            modOwner->ApplySpellMod(m_spellInfo->Id, SPELLMOD_RANGE, max_range, this);
-
-        max_range += m_casterUnit->GetTotalAuraRangeModifier(SPELL_AURA_MOD_ATTACK_AND_SPELL_RANGE) / 1000.0f;
-    }
-
-    max_range += range_mod;
+    auto const bounds = GetGenericRangeBounds(strict, target);
+    float const min_range = bounds.first;
+    float const max_range = bounds.second;
 
     GameObject* go = m_targets.getGOTarget(); // Check range for gobjects (lock picking)
     if (go && m_caster->IsPlayer())

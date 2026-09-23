@@ -30,6 +30,7 @@
 #include "WorldSocketMgr.h"
 #include "AddonHandler.h"
 #include "Anticheat/Anticheat.h"
+#include "ScriptObjects.h"
 
 
 #include "Opcodes.h"
@@ -170,7 +171,7 @@ int WorldSocket::HandleAuthSession(WorldPacket& recvPacket)
     LoginDatabase.escape_string(safe_account);
     // No SQL injection, username escaped.
 
-	QueryResult* result = LoginDatabase.PQuery("SELECT a.id, a.rank, a.sessionkey, a.last_ip, a.locked, a.v, a.s, a.mutetime, a.locale, a.os, a.platform, a.flags, a.email, a.username, UNIX_TIMESTAMP(a.joindate), a.queue_skip, "
+	QueryResult* result = LoginDatabase.PQuery("SELECT a.id, a.`rank`, a.sessionkey, a.last_ip, a.locked, a.v, a.s, a.mutetime, a.locale, a.os, a.platform, a.flags, a.email, a.username, UNIX_TIMESTAMP(a.joindate), a.queue_skip, "
 		"ab.unbandate > UNIX_TIMESTAMP() OR ab.unbandate = ab.bandate FROM account a "
 		"LEFT JOIN account_banned ab ON a.id = ab.id AND ab.active = 1 WHERE a.username = '%s' LIMIT 1", safe_account.c_str());
 
@@ -456,7 +457,24 @@ int WorldSocket::HandlePing(WorldPacket& recvPacket)
 
 int WorldSocket::OnSocketOpen()
 {
-    return sWorldSocketMgr->OnSocketOpen(this);
+    int result = sWorldSocketMgr->OnSocketOpen(this);
+    if (result != -1)
+    {
+        ScriptRegistry<ServerScript>::ForEachEnabledHook(SERVERHOOK_ON_SOCKET_OPEN, [&](ServerScript* script)
+        {
+            script->OnSocketOpen(this);
+        });
+    }
+
+    return result;
+}
+
+void WorldSocket::OnSocketClose()
+{
+    ScriptRegistry<ServerScript>::ForEachEnabledHook(SERVERHOOK_ON_SOCKET_CLOSE, [&](ServerScript* script)
+    {
+        script->OnSocketClose(this);
+    });
 }
 
 int WorldSocket::SendStartupPacket()

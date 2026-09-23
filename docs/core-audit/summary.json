@@ -1,0 +1,17 @@
+{
+  "source_commit": "1c7c6b4c67ba2630f7cc166a9034bd3d029ffdc5",
+  "generated_utc": "2026-09-22T14:01:24.1361558Z",
+  "maps": 70,
+  "instance_maps": 44,
+  "creature_templates": 14339,
+  "map_template_references": 11582,
+  "source_files": 4769,
+  "dungeon_source_files": 280,
+  "registrations": 1231,
+  "encounter_map_template_rows": 1520,
+  "flagged_encounter_rows": 235,
+  "missing_spawn_templates": 0,
+  "missing_spawn_maps": 0,
+  "no_runtime_validation": true,
+  "scanner_limit": "Lexical dependencies and literal legacy registrations only; not proof of all dynamic summons, preprocessing, runtime registrations or encounter completeness."
+}

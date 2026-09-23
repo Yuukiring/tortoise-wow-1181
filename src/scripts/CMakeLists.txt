@@ -351,6 +351,7 @@ world/arathi_highlands.cpp
 world/ashenvale.cpp
 world/alahthalas.cpp
 world/azshara.cpp
+world/balor.cpp
 world/blasted_lands.cpp
 world/boss_omen.cpp
 world/boss_omen.h
@@ -469,7 +470,6 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/src/game/Movement/spline
   ${CMAKE_SOURCE_DIR}/src/game/Objects
   ${CMAKE_SOURCE_DIR}/src/game/OutdoorPvP
-  ${CMAKE_SOURCE_DIR}/src/game/PlayerBots
   ${CMAKE_SOURCE_DIR}/src/game/Protocol
   ${CMAKE_SOURCE_DIR}/src/game/Spells
   ${CMAKE_SOURCE_DIR}/src/game/Threat
@@ -489,6 +489,14 @@ include_directories(
 add_library(${LIBRARY_NAME} STATIC
   ${SCRIPTS_SRCS}
 )
+
+# MSVC's /GL intermediate representation makes this exceptionally large
+# generated script archive exceed the COFF librarian's 4 GiB hard limit.
+# Keep LTCG on the core, bot module and final executable; ordinary /O2 is the
+# only viable release mode for this archive.
+if(MSVC AND (ENABLE_LTO OR PROFILE_GENERATE OR PROFILE_USE))
+  target_compile_options(${LIBRARY_NAME} PRIVATE $<$<CONFIG:Release>:/GL->)
+endif()
 
 SET_TARGET_PROPERTIES (${LIBRARY_NAME} PROPERTIES FOLDER "Game Libs")
 
@@ -558,5 +566,21 @@ else()
       target_precompile_headers(${LIBRARY_NAME} PRIVATE
           ${PCHS}
           )
+  endif()
+endif()
+
+# Independent of USE_PCH_OLD on purpose: on MSVC the old PCH implementation is
+# the default, and a fallback that lived only in the modern branch never ran
+# there (2026-09-04, found by a reader: -DUSE_PCH_OLD=OFF "must also be set").
+# No PCH (USE_PCH=OFF - the usual escape from MSVC's PCH size limits, or a
+# compiler without support): the sources still assume the precompiled set of
+# headers is in scope, so force-include the same header instead. Identical
+# semantics, just no .pch file. Without this a USE_PCH=OFF build died on
+# 2026-09-04 in the scripts library the same way.
+if(NOT USE_PCH)
+  if(MSVC)
+    target_compile_options(${LIBRARY_NAME} PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/scriptPCH.h")
+  else()
+    target_compile_options(${LIBRARY_NAME} PRIVATE "-include${CMAKE_CURRENT_SOURCE_DIR}/scriptPCH.h")
   endif()
 endif()

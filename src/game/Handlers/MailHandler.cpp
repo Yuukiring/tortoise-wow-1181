@@ -40,6 +40,9 @@
 #include "Anticheat.h"
 #include "AccountMgr.h"
 #include "Database/DatabaseImpl.h"
+#ifdef ENABLE_ELUNA
+#include "LuaEngine.h"
+#endif
 
 extern bool IsPlayerHardcore(uint32 lowGuid);
 
@@ -436,6 +439,17 @@ void WorldSession::HandleSendMailCallback(WorldSession::AsyncMailSendRequest* re
     }
     data.JustMailed(rc_account);
 
+#ifdef ENABLE_ELUNA
+    if (Eluna* e = loadedPlayer->GetEluna())
+    {
+        if (!e->OnSendMail(loadedPlayer, req->receiver))
+        {
+            SendMailResult(0, MAIL_SEND, MAIL_ERR_EQUIP_ERROR, EQUIP_ERR_CANT_DO_RIGHT_NOW);
+            return;
+        }
+    }
+#endif
+
     SendMailResult(0, MAIL_SEND, MAIL_OK);
 
     loadedPlayer->ModifyMoney(-int32(reqmoney));
@@ -790,12 +804,16 @@ void WorldSession::HandleMailTakeItem(WorldPacket& recv_data)
 
         loadedPlayer->LogItem(it, LogItemAction::MailReceived);
 
-        uint32 count = it->GetCount();                      // save counts before store and possible merge with deleting
+        // Inventory merging can delete the incoming Item. Snapshot diagnostic
+        // fields with the count before transferring its ownership.
+        uint32 count = it->GetCount();
+        uint32 const receivedEntry = it->GetEntry();
+        std::string const receivedName = it->GetProto()->Name1;
         it->SetState(ITEM_UNCHANGED);                       // need to set this state, otherwise item cannot be removed later, if necessary
         loadedPlayer->MoveItemToInventory(dest, it, true);
 
         sLog.out(LOG_MAIL_AH, "HandleMailTakeItem player %s took item (%s) with entry %u.",
-                 loadedPlayer->GetShortDescription().c_str(), it->GetProto()->Name1.c_str(), it->GetEntry());
+                 loadedPlayer->GetShortDescription().c_str(), receivedName.c_str(), receivedEntry);
 
         CharacterDatabase.BeginTransaction(loadedPlayer->GetGUIDLow());
         loadedPlayer->SaveInventoryAndGoldToDB();

@@ -45,10 +45,20 @@ LogsDatabase.Info = "127.0.0.1;3306;mangos;mangos;tw_logs"
 # DB Auto-updater
 
 Database.AutoUpdate.Enabled = 1
-Database.AutoUpdate.Path = "../../sql/"
-Database.AutoUpdate.AuthUpdateName = "unused"
-Database.AutoUpdate.CharUpdateName = "unused"
-Database.AutoUpdate.WorldUpdateName = "database_updates"
+Database.AutoUpdate.Path = "../../sql/database_updates/"
+Database.AutoUpdate.AuthUpdateName = "auth"
+Database.AutoUpdate.CharUpdateName = "character"
+Database.AutoUpdate.WorldUpdateName = "world"
+
+# Module data/sql folder names are independent from the core migration tree.
+Database.AutoUpdate.ModuleAuthUpdateName = "auth"
+Database.AutoUpdate.ModuleCharUpdateName = "char"
+Database.AutoUpdate.ModuleWorldUpdateName = "world"
+
+# Database.AutoUpdate.AllowedModules. Comma-separated module names to include for
+# module SQL updates, or "all" to scan every enabled module.
+
+Database.AutoUpdate.AllowedModules = "all"
 
 # Database.AutoUpdate.SortByName. Controls the order in which SQL migration files are applied.  
 #   0 = Sort by file modification time ascending (oldest first); alphabetical name as tiebreaker. (Default)  
@@ -98,6 +108,28 @@ UseProcessors = 0
 
 ProcessPriority = 1
 
+# AiPlayerbot.ConfigFile. Where to read the bot settings from.
+#     Empty means: look next to this file, and if that fails fall back to the
+#     path compiled in at build time. Set it when the two live apart, which is
+#     easy to end up with when the server runs out of its build directory.
+
+AiPlayerbot.ConfigFile = ""
+
+# Malloc.ArenaMax. Caps how many malloc arenas glibc may create. (Linux only)
+#     glibc gives each thread its own arena, up to eight per core - 64 on an
+#     eight core machine. Every arena holds on to what it frees, so a workload
+#     that allocates constantly across many threads scatters its freed memory
+#     and returns little of it. The symptom is a resident size climbing steadily
+#     at a constant player count while nothing leaks.
+#     Measured with a thousand bots: capping at 4 took RSS after nine and a half
+#     hours from 13.4 GB to 9.9 GB, and growth from ~810 MB/h to 483, with no
+#     cost to the world tick. Fewer arenas do mean more contention, so measure
+#     rather than assume.
+#     0 leaves glibc alone. Worth setting on a server with many bots, pointless
+#     on a small one.
+
+Malloc.ArenaMax = 0
+
 # Compression. Compression level for update packages sent to client. (1-9)
 
 Compression = 1
@@ -146,11 +178,20 @@ AutoRestart.HourMax = 6
 
 # GridUnload. Unload grids. (If you have lot memory you can disable it to speed up player move to new grids second time)
 
-GridUnload = 0
+GridUnload = 1
 
 # CleanupTerrain. Enable / Disable CleanupTerrain.
 
 CleanupTerrain = 1
+
+#    MMapTileUnload
+#        Reclaim unused navigation tile payloads at runtime. Tile mutation
+#        waits for active navigation queries, and terrain cleanup waits for
+#        asynchronous terrain readers. Mesh/query owners remain cached until
+#        shutdown. Disabling this retains tile payloads and uses more memory.
+#        This configuration enables unloading; an omitted key defaults to 0.
+
+MMapTileUnload = 1
 
 # GridCleanUpDelay. Grid clean up delay.
 
@@ -166,7 +207,7 @@ ChangeWeatherInterval = 1200000
 
 # PlayerSave.Interval. Player save interval.
 
-PlayerSave.Interval = 60000
+PlayerSave.Interval = 900000
 
 # PlayerSave.Stats.MinLevel. Minimum level for saving character stats for external usage in database.
 
@@ -201,6 +242,18 @@ vmap.petLOS = 1
 # mmap.enabled. Enable / Disable pathfinding using mmaps.
 
 mmap.enabled = 1
+
+# Per-map path search budget (2048..65535 nodes per map-owning thread).
+# Unlisted maps keep 2048. Changes require restart or unloading the map.
+# Thorn Gorge's routes exhaust 2048; 16384 resolves all tested objective routes.
+mmap.QueryNodes.821 = 16384
+
+# Restrict ground-player path requests on every map to player-walkable slopes.
+# Objectives, combat, instances and open-world travel share this filter.
+# Native flight and explicit ignore-pathfinding states keep their capabilities.
+# Missing walking nav data fails; it never authorizes walking through obstacles.
+# Set 0 for the legacy slope filter (failed queries still remain failures).
+mmap.PlayerWalkable = 1
 
 # Collision.Models.Unload. Free model when no one uses it anymore.
 
@@ -245,6 +298,63 @@ CleanCharacterDB = 1
 
 Continents.Instanciate = 0
 Continents.InactivePlayers.SkipUpdates = 5
+
+# Continents.HibernatedPlayers.SkipUpdates
+# Number of full player updates skipped for machine-driven characters on a
+# continent/zone with no real player. Combat, taxi, battleground, teleporting,
+# and real-player-controlled bots always bypass this limit.
+
+Continents.HibernatedPlayers.SkipUpdates = 19
+
+# Continents.MachineDriven.AdaptiveStride
+#     Dynamically multiplies the update stride of autonomous background
+#     characters when the average world tick exceeds TargetDiff. Human players
+#     and latency-sensitive bots (near/controlled by a player, combat, groups,
+#     instances, battlegrounds, taxi/transport and teleport) remain full-rate.
+#     Default: 1 (enabled)
+
+Continents.MachineDriven.AdaptiveStride = 1
+
+# Continents.MachineDriven.TargetDiff
+#     Target average world tick in milliseconds used by AdaptiveStride.
+#     Default: 100
+
+Continents.MachineDriven.TargetDiff = 100
+
+# Continents.MachineDriven.MaxStrideMultiplier
+#     Maximum background stride multiplier under sustained load.
+#     Default: 4
+
+Continents.MachineDriven.MaxStrideMultiplier = 4
+
+# Continents.MachineDriven.CriticalRefreshInterval
+#     Milliseconds between expensive module-level proximity/group checks for
+#     autonomous characters. Immediate combat, taxi, transport, teleport and
+#     battleground state is still evaluated every map pass. Set to 0 to check
+#     every pass.
+#     Default: 250
+
+Continents.MachineDriven.CriticalRefreshInterval = 250
+
+# Continents.MachineDriven.MaxCatchUpDiff
+#     Maximum deferred map-time delivered to an autonomous character in one
+#     update. Wall-clock player timers still receive their true elapsed time;
+#     this only prevents background AI/movement from replaying a multi-second
+#     backlog in one map tick. Set to 0 for no limit.
+#     Default: 500
+
+Continents.MachineDriven.MaxCatchUpDiff = 500
+
+# Continents.MachineDriven.AutonomousActiveStride
+#     Number of continent player-update passes across which autonomous active
+#     characters are distributed. Active means combat, taxi, transport,
+#     teleport or queued battleground state without a nearby real player.
+#     Characters near or grouped with a real player always remain full-rate.
+#     A value of 2 matches the default 500ms playerbot reaction cadence under
+#     load while preventing thousands of combat bots from bursting together.
+#     Default: 2
+
+Continents.MachineDriven.AutonomousActiveStride = 2
 MapUpdate.ReduceGridActivationDist.Tick = 190
 MapUpdate.IncreaseGridActivationDist.Tick = 130
 MapUpdate.MinGridActivationDistance = 57
@@ -257,11 +367,44 @@ MapUpdate.MinVisibilityDistance = 55
 
 MapUpdate.Empty.UpdateTime = 60000
 
+# Shared map-owner pool. Replaces per-continent-part workers and separate
+# instance dispatch. Transfers/cleanup join at the manager, not inside jobs.
+# 0 runs the same phases synchronously; changes require a restart.
+MapUpdate.WorkerThreads = 4
+MapUpdate.IdleBotMaxUpdatesPerTick = 128
+# Opt-in CMaNGOS full/minimal AI cadence. Independent full turns continue in
+# empty maps; combat and player interactions retain foreground dispatch.
+# Restart required. ManTech's minimal rescheduling preserves longer action waits.
+MapUpdate.BackgroundAI.CmangosScheduling = 0
+MapUpdate.IdleBotJitterMs = 4000
+MapUpdate.IdleBotMaxTimerAdvanceMs = 250
+AdaptiveLoad.BotBudgetMs = 20
+AdaptiveLoad.BackgroundBotMinUpdates = 16
+# Promote old due work without an unlimited catch-up burst. Not a latency SLA.
+AdaptiveLoad.BackgroundBotMaxDeferralMs = 15000
+AdaptiveLoad.BotRecoveryTicks = 20
+# Optional process-memory admission guard, MB. 0 disables each threshold.
+# Soft halves background login batches; hard pauses new background logins.
+# Recovery must be below hard; invalid/zero recovery uses soft or 90% of hard.
+# Existing bots, player-directed companions and the population target are unchanged.
+AdaptiveLoad.MemorySoftMB = 0
+AdaptiveLoad.MemoryHardMB = 0
+AdaptiveLoad.MemoryRecoverMB = 0
+# All DB result callbacks share this world-tick budget (queries stay async).
+Database.CallbackBudgetMs = 5
+World.AsyncWorkBudgetMs = 5
+# Nonfatal, independent breadcrumb on a stalled world. 0 disables.
+Diagnostics.StallSeconds = 10
+# Prevent accidental console selection from suspending console output.
+Console.DisableQuickEdit = 1
+
+# Legacy setting retained for config compatibility; use WorkerThreads above.
 # MapUpdate.Instanced.UpdateThreads. Per-map threading.
 
 MapUpdate.Instanced.UpdateThreads = 4
 
-# Per-map subthreads. (Not for instanced maps)
+# Legacy packet-builder settings retained for compatibility. The new shared
+# builder uses MapUpdate.ObjectThreads / MapUpdate.VisibilityChunkSize instead.
 
 MapUpdate.ObjectsUpdate.MaxThreads = 2
 MapUpdate.ObjectsUpdate.Timeout = 80
@@ -274,7 +417,8 @@ MapUpdate.UpdatePacketsDiff = 40
 MapUpdate.UpdatePlayersDiff = 30
 MapUpdate.UpdateCellsDiff = 40
 
-# MapUpdate.Continents.MTCells.Threads. Number of different cells to update at the sametime.
+# Legacy concurrent gameplay-cell settings are unused. CellThreads only
+# parallelizes discovery; gameplay execution is ordered on the map owner.
 
 MapUpdate.Continents.MTCells.Threads = 1
 
@@ -283,14 +427,16 @@ MapUpdate.Continents.MTCells.Threads = 1
 
 MapUpdate.Continents.MTCells.SafeDistance = 600
 
-# Continents.MotionUpdate.Threads. Parallelized execution of cells from same map.
+# Motion and visibility mutations run on the map owner. Nonzero legacy values
+# are clamped off to prevent cross-object races and duplicate worker systems.
 
-Continents.MotionUpdate.Threads = 1
+Continents.MotionUpdate.Threads = 0
 
 # AsyncTasks.Threads | AsyncQueriesTickTimeout. Number of threads for async tasks. (/who, list AH items ...)
 
 AsyncTasks.Threads = 2
-AsyncQueriesTickTimeout = 15000
+# Legacy value. Database.CallbackBudgetMs now controls owner-thread completions.
+AsyncQueriesTickTimeout = 5
 
 # Movement.RelocationVmapsCheckDelay
 # Movement.MaxPointsPerPacket
@@ -417,7 +563,12 @@ LogTimestamp = 1
 
 # LogFileLevel. Server file level of logging. 0 = Minimum; 1 = Error; 2 = Detail; 3 = Full/Debug
 
-LogFileLevel = 1
+LogFileLevel = 0
+
+# Rotate append-mode logs at startup when they reach this size. Numbered files
+# .1 through LogRotateKeep are retained. Set either value to 0 to disable.
+LogRotateSizeMB = 100
+LogRotateKeep = 5
 
 # HonorLogFile. HonorLogFile name.
 
@@ -442,16 +593,16 @@ LogFilter_CreatureMoves = 1
 LogFilter_VisibilityChanges = 1
 LogFilter_DbStrictedCheck = 1
 LogFilter_Honor = 1
-LogFilter_PlayerStats = 0
-LogFilter_SQLText = 0
-LogFilter_PlayerMoves = 0
-LogFilter_PeriodicAffects = 0
-LogFilter_AIAndMovegens = 0
-LogFilter_Damage = 0
-LogFilter_Combat = 0
-LogFilter_SpellCast = 0
-LogFilter_Pathfinding = 0
-LogFilter_Weather = 0
+LogFilter_PlayerStats = 1
+LogFilter_SQLText = 1
+LogFilter_PlayerMoves = 1
+LogFilter_PeriodicAffects = 1
+LogFilter_AIAndMovegens = 1
+LogFilter_Damage = 1
+LogFilter_Combat = 1
+LogFilter_SpellCast = 1
+LogFilter_Pathfinding = 1
+LogFilter_Weather = 1
 
 # AnticheatLogFile. Log file for anticheat check results.
 
@@ -583,6 +734,34 @@ PerformanceLog.SlowPackets = 100
 PerformanceLog.SlowMapPackets = 100
 PerformanceLog.SlowPacketBroadcast = 0
 
+# Aggregated real-player/bot update cost and deferral counts. Set to 0 to disable.
+PerformanceLog.PlayerUpdateSummaryInterval = 30000
+
+# Temporary TD01-TD06 instrumentation; see doc/TURTLE_DIAGNOSTICS.md.
+Diagnostics.Architecture.Enabled = 0
+Diagnostics.Architecture.IntervalMs = 30000
+
+# ManTech Arch2/3 read-only cell discovery. Gameplay remains map-owner ordered.
+# CellThreads is a shared pool, NOT extra workers per map. Restart to change.
+MapUpdate.CellThreads = 2
+# Shared ManTech idle-AI lane; one serial batch per map, joined before gameplay
+# resumes on that map. 0 executes inline. Restart required; not threads per bot.
+MapUpdate.IdleBotThreads = 2
+MapUpdate.CellChunkSize = 64
+MapUpdate.CellMinParallelCells = 128
+MapUpdate.CellMaxChunksPerMap = 8
+MapUpdate.CellMaxWaitMs = 75
+MapUpdate.CellFallbackSeconds = 30
+MapUpdate.BackgroundObjects.MaxSkip = 20
+# ManTech CMaNGOS bot-grid separation and protected idle-creature deadlines.
+# Restart required. Set 0 for the diagnostic baseline's scheduling behavior.
+MapUpdate.BackgroundWorld.CmangosScheduling = 1
+MapUpdate.ObjectThreads = 2
+MapUpdate.VisibilityChunkSize = 64
+Diagnostics.RepeatedScriptWarningIntervalMs = 30000
+# Shared ACE listener connection-burst buffer. No effect on socketless bots.
+Network.ListenBacklog = 1024
+
 # RaLogFile. Log file of RA commands.
 
 RaLogFile = ""
@@ -615,6 +794,16 @@ DBC.Locale = 255
 # LoadLocales. Whether to load the text locale tables.
 
 LoadLocales = 1
+
+# LoadSpellsFromSql
+#    Load spell data from the world database `spell_template` table (1) instead of the
+#    client's Spell.dbc (0). Turtle WoW keeps its server-side spell changes ONLY in
+#    spell_template - the 1.18 Paladin changes, the appearance-changing items and every
+#    custom spell. With 0 those spells come out wrong or missing (reported 2026-09-05).
+#    Leave this at 1 unless you are debugging the DBC loader itself.
+#    Default: 1 - True
+
+LoadSpellsFromSql = 1
 
 # StrictPlayerNames. Limit player name to language specific symbols set, not allow create characters, 
 # and set rename request and disconnect at not allowed symbols name.
@@ -684,6 +873,10 @@ StartHonorPoints = 0
 # MinHonorKills. Min kills that players must obtain to enter in weekly honor calculation.
 
 MinHonorKills = 1
+
+# WeeklyHonorCap. Max honor that can be credited each week. Rank points are still awarded after this cap.
+
+WeeklyHonorCap = 20000
 
 # MaintenanceDay. The day of the week is performed server maintenance.
 
@@ -1068,6 +1261,10 @@ WhisperRestriction = 0
 # SayMinLevel. Minimum level to /say in chat.
 
 SayMinLevel = 1
+
+# Chat.MinLevel. Minimum level to use general/trade/LFG channels.
+
+Chat.MinLevel = 1
 
 # SayEmoteMinLevel. Minimum level to /emote in chat.
 
@@ -1637,8 +1834,8 @@ Visibility.GroupMode = 0
 
 # Visibility.Distance. Visibility distance for different ingame object in different maps. (Max 533)
 
-Visibility.Distance.Continents = 250
-Visibility.Distance.Instances = 250
+Visibility.Distance.Continents = 100
+Visibility.Distance.Instances = 170
 Visibility.Distance.BG = 533
 
 # Visibility.Distance.Continents.Min. If bad performance, visibilityDistance may be reduced.
@@ -1701,8 +1898,11 @@ Rate.Drop.Item.Referenced = 1
 Rate.Drop.Money = 1
 
 # Rate.XP. XP rates (player's favorite, haha)
+# Kill applies to all kill XP. Kill.Elite is an additional multiplier for
+# elite creatures and is applied before Kill.
 
 Rate.XP.Kill = 1
+Rate.XP.Kill.Elite = 1
 Rate.XP.Quest = 1
 Rate.XP.Explore = 1
 
@@ -1873,6 +2073,24 @@ WarEffortResourceCompletePeriod = 86400
 
 Battleground.CastDeserter = 1
 
+# Thorn Gorge prototype (requires sql/custom/thorn_gorge_prototype.sql).
+# Restart required. Keep disabled until the test realm has map 821 assets.
+Battleground.ThornGorge.Enabled = 0
+# Provisional central flag position. Z is resolved from terrain/collision.
+Battleground.ThornGorge.FlagX = 2174.469482
+Battleground.ThornGorge.FlagY = 1569.349243
+# Center/dropped flag model scale. Same scale as WSG templates; clamps to 1-5.
+Battleground.ThornGorge.FlagScale = 2.5
+# Capture samples: 25 samples from neutral for one player, 13 for two or more.
+# Interval clamps to 1000-10000ms; net player advantage clamps to 1-5.
+Battleground.ThornGorge.CaptureTickMs = 1200
+Battleground.ThornGorge.CaptureMaxAdvantage = 2
+# Native BgLogFile receives THORN_GORGE events. 0=off, 1=events/team snapshots,
+# 2=also player positions, state, scores and chosen objectives. New matches read
+# these settings. Snapshot interval is clamped to 1000-60000ms; events to 64/s.
+Battleground.ThornGorge.LogLevel = 0
+Battleground.ThornGorge.LogIntervalMs = 5000
+
 # Battleground.QueueAnnouncer.Join. Enable queue announcer posting to chat at join.
 
 Battleground.QueueAnnouncer.Join = 0
@@ -1989,6 +2207,19 @@ Network.PacketBroadcast.ReduceVisDistance.DiffAbove = 400
 
 Console.Enable = 1
 
+########################################
+# SOAP remote-command interface
+#   SOAP.Enabled - 1 = enable, 0 = disable (default). Off unless set to 1.
+#   Requires a binary built with ENABLE_SOAP=ON (the default on all platforms).
+#   SOAP.IP      - bind address (default 127.0.0.1, localhost only)
+#   SOAP.Port    - bind port (default 7878)
+# Requires a SEC_ADMINISTRATOR account. One command per request; the
+# command's output is returned as the response.
+########################################
+SOAP.Enabled = 0
+SOAP.IP = 127.0.0.1
+SOAP.Port = 7878
+
 # CharDelete.Method. Character deletion behavior.
 
 CharDelete.Method = 1
@@ -2014,6 +2245,38 @@ BeginnersGuilds = 1
 BeginnersGuildHorde = 126
 BeginnersGuildAlliance = 126
 
+# --- Fork additions (see README About this fork) ---
+
+# AutoWorldBuff. Periodically applies world buffs to real online players (bots
+# and the Discord bridge are excluded). Each buff has its own independent timer
+# so they do not all fire at the same moment:
+#   Spirit of Zandalar               - anyone in Stranglethorn Vale
+#   Warchief's Blessing              - Horde only, in Crossroads or Orgrimmar
+#   Rallying Cry of the Dragonslayer - Alliance in Stormwind City,
+#                                      Horde in Orgrimmar
+# FirstMin/FirstMaxInterval apply to the first roll after a (re)start and are
+# kept short so frequent restarts do not delay the buffs by a full interval
+# every time. Min/MaxInterval apply to every roll after that. All values in ms.
+
+AutoWorldBuff.Enable = 0
+AutoWorldBuff.FirstMinInterval = 600000
+AutoWorldBuff.FirstMaxInterval = 7200000
+AutoWorldBuff.MinInterval = 3600000
+AutoWorldBuff.MaxInterval = 10800000
+AutoWorldBuff.WarningInterval = 600000
+
+# AutoDonationPoints. Grants donation points (shop_coins) to real online players
+# for time spent online, tracked per account. Requires the
+# donation_point_progress table in the LOGIN database - see
+# sql/logon/donation_point_progress.sql. Without it the feature still runs but
+# progress is lost on every restart. FlushIntervalMs controls how often progress
+# is written out; at worst that much time is lost on an unclean shutdown.
+
+AutoDonationPoints.Enable = 0
+AutoDonationPoints.IntervalMs = 3600000
+AutoDonationPoints.Amount = 1
+AutoDonationPoints.FlushIntervalMs = 300000
+
 # AutoBroadcast.Timer. Print broadcast messages in players chat.
 
 AutoBroadcast.Timer = 2400000
@@ -2037,14 +2300,6 @@ Transmog.ReqMoneyRate = 0
 # Miscellaneous
 
 StaticObjectLOS = 1
-
-PlayerBot.Enable = 1
-PlayerBot.Debug = 0
-PlayerBot.UpdateMs = 1000
-PlayerBot.MinBots = 0
-PlayerBot.MaxBots = 0
-PlayerBot.Refresh = 10000
-PlayerBot.ForceLogoutDelay = 1
 
 MailSpam.ExpireSecs = 30
 MailSpam.MaxMails = 5
@@ -2119,6 +2374,66 @@ Leech.Enable = 0
 # Sets the percentage of damage to leech
 Leech.Amount = 0.05
 
+# Leech restrictions. Without them the leech applies to every player -
+# including the random bots - and in PvP as well.
+#   PvEOnly          against non-players only
+#   RealPlayersOnly  no random bots (RNDBOT accounts)
+#   SoloOnly         only while not in a party or raid
+#   DungeonOnly      instances only (dungeons and raids), not the open world
+Leech.PvEOnly = 1
+Leech.RealPlayersOnly = 1
+Leech.SoloOnly = 1
+Leech.DungeonOnly = 1
+
+# SoloDungeonRepopAlive. A player who dies ALONE inside an instance is brought
+# back alive just inside the entrance instead of having to walk their corpse
+# back - solo there is nobody who could resurrect them. Does nothing while in a
+# group, since a group can resurrect. Map::IsDungeon() covers raids too.
+SoloDungeonRepopAlive.Enable = 0
+
+# GuildBank.NpcEntries*. Which creatures count as guild vault keepers - a player
+# has to stand next to one of them for guild bank actions to be accepted.
+# Previously 80917/80918 were hardcoded, so only Stormwind and Orgrimmar worked.
+# Turtle places decorative vault keepers in the other capitals that were never
+# wired up; they are listed here.
+#   62008 Faredin (Darnassus), 62009 Lorien (gnome bank), 62011 Golgan (Ironforge)
+#   62010 Gewana (Thunder Bluff), 62012 Arthur (Undercity)
+# They also need gossip_menu_id set, see sql/guildbank_trigger.sql.
+GuildBank.NpcEntriesAlliance = 80917
+GuildBank.NpcEntriesHorde = 80918
+
+# LFT.BotFill. Fills a waiting player's dungeon queue with random bots.
+#
+# Bots are put into the same queue real players sit in, so the existing matcher
+# handles roles, faction, hardcore and group building. Getting to the dungeon is
+# not automated: the party leader types "summon" in party chat.
+#
+#   DelaySeconds  how long a real player waits before bots are added. Filling
+#                 instantly would mean nobody ever waits for a human again.
+#   LevelRangeBelow / LevelRangeAbove
+#                 how far under or over the waiting player a bot's level may
+#                 sit. Not the same number on both sides: a bot a few levels
+#                 above still hits, holds threat and survives, while one below
+#                 misses and dies - and the group sets off believing it has a
+#                 tank. The instance names the client sends carry no level
+#                 information, so the player is the reference.
+#
+# Real players always take priority: when one joins the queue, every bot that is
+# not already part of an offer is dropped again. An offer already sent out is
+# left alone rather than breaking a group mid-formation.
+#   LevelRangeBelowHealer
+#                 the same limit for a healer, which can afford to be further
+#                 under the group: it keeps its distance and is not the one
+#                 being hit. Healers are also the scarcer half of the shortage,
+#                 so a tighter bound here costs groups that would otherwise
+#                 have formed.
+LFT.BotFill.Enable = 0
+LFT.BotFill.DelaySeconds = 60
+LFT.BotFill.LevelRangeBelow = 2
+LFT.BotFill.LevelRangeBelowHealer = 4
+LFT.BotFill.LevelRangeAbove = 6
+
+
 # AutoScaler.Enable. Enable or disable instance auto-scaling. 0 = off, 1 = on.
 AutoScalerEnable = 0
 
@@ -2132,3 +2447,39 @@ ScalarMin20ManHP = 0.1
 ScalarMin20ManDMG = 0.1
 ScalarMin40ManHP = 0.01
 ScalarMin40ManDMG = 0.01
+
+###################################################################################################################
+# ELUNA LUA ENGINE
+#
+# Eluna.Enabled
+#     Enables the Lua engine. Default: 1.
+# Eluna.TraceBack
+#     Includes a Lua debug traceback in script errors. Default: false.
+# Eluna.ReloadCommand
+#     Enables the `.reload eluna` command. Default: true.
+# Eluna.UseUnsafeMethods
+#     Exposes methods that can be harmful or expensive when misused.
+# Eluna.UseDeprecatedMethods
+#     Exposes compatibility methods that may be removed by Eluna.
+# Eluna.OnlyOnMaps
+#     Comma-separated map IDs that receive a Lua state; empty means all maps.
+# Eluna.ScriptPath
+#     Lua script directory, absolute or relative to the server working directory.
+# Eluna.RequirePaths / Eluna.RequireCPaths
+#     Additional Lua and native-module search paths using Lua path patterns.
+# Eluna.ReloadSecurityLevel
+#     Minimum account security for `.reload eluna` (0 player .. 4 console).
+# ElunaErrorLogFile
+#     Dedicated Eluna log file. Empty disables the dedicated file.
+###################################################################################################################
+Eluna.Enabled = 1
+Eluna.TraceBack = false
+Eluna.ReloadCommand = true
+Eluna.UseUnsafeMethods = false
+Eluna.UseDeprecatedMethods = false
+Eluna.OnlyOnMaps = ""
+Eluna.ScriptPath = "./lua_scripts"
+Eluna.RequirePaths = ""
+Eluna.RequireCPaths = ""
+Eluna.ReloadSecurityLevel = 3
+ElunaErrorLogFile = "ElunaErrors.log"

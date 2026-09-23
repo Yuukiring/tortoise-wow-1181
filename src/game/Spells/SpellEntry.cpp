@@ -578,6 +578,11 @@ uint32 SpellEntry::GetCastTime(WorldObject* caster, Spell* spell) const
     if (!spellCastTimeEntry)
         return 0;
 
+    // Thorn Gorge objective interaction has a fixed cast time, like a capture
+    // channel: combat haste and class spell modifiers must not shorten it.
+    if (Id == 59011)
+        return uint32(std::max(0, spellCastTimeEntry->CastTime));
+
     int32 spellRank = caster && caster->GetTypeId() != TYPEID_GAMEOBJECT ? static_cast<Unit*>(caster)->GetSpellRank(this) : 0;
     int32 castTime = spellCastTimeEntry->CastTime + spellCastTimeEntry->CastTimePerLevel * (spellRank / 5 - baseLevel);
     castTime = std::max(castTime, spellCastTimeEntry->MinCastTime);
@@ -598,6 +603,26 @@ uint32 SpellEntry::GetCastTime(WorldObject* caster, Spell* spell) const
             else if (spell->IsRangedSpell() && !spell->IsAutoRepeat())
             {
                 castTime = int32(castTime * pUnit->m_modAttackSpeedPct[RANGED_ATTACK]);
+            }
+
+            // Native skill-specific cast-time auras use EffectMiscValue as
+            // the skill ID. Match the existing spell/skill index; a spell
+            // with duplicate skill rows must apply each aura only once.
+            auto const& skillCastAuras = pUnit->GetAurasByType(SPELL_AURA_MOD_SKILL_CAST_TIME);
+            if (!skillCastAuras.empty())
+            {
+                auto const skillBounds = sSpellMgr.GetSkillLineAbilityMapBoundsBySpellId(Id);
+                for (Aura const* aura : skillCastAuras)
+                {
+                    for (auto itr = skillBounds.first; itr != skillBounds.second; ++itr)
+                    {
+                        if (int32(itr->second->skillId) == aura->GetModifier()->m_miscvalue)
+                        {
+                            castTime = int32(castTime * (100.0f + aura->GetModifier()->m_amount) / 100.0f);
+                            break;
+                        }
+                    }
+                }
             }
         }
     }
@@ -1207,4 +1232,16 @@ bool SpellEntry::HasAuraOrTriggersAnotherSpellWithAura(AuraType aura) const
                     return true;
     }
     return false;
+}
+
+// See the declarations in the header: this core keeps spell distances in
+// SpellRange.dbc behind rangeIndex, not on the spell.
+float SpellEntry::GetMaxRange(bool /*positive*/) const
+{
+    return ::GetSpellMaxRange(sSpellRangeStore.LookupEntry(rangeIndex));
+}
+
+float SpellEntry::GetMinRange(bool /*positive*/) const
+{
+    return ::GetSpellMinRange(sSpellRangeStore.LookupEntry(rangeIndex));
 }

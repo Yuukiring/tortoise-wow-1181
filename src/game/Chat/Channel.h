@@ -96,7 +96,11 @@ inline bool IsDefenseChannel(uint32 channelId)
 class Channel
 {
     friend class ChannelBroadcaster;
+    // bot calls Channel::Say directly.
+    friend class PlayerbotAI;
     public:
+        // bot's Say(Player*, ...) overload.
+        void Say(Player const* player, const char* what, uint32 lang = LANG_UNIVERSAL, bool skipCheck = false);
     enum ChannelFlags
     {
         CHANNEL_FLAG_NONE       = 0x00,
@@ -181,6 +185,8 @@ class Channel
         void SetPassword(std::string const& npassword) { m_password = npassword; }
         void SetAnnounce(bool nannounce) { m_announce = nannounce; }
         uint32 GetNumPlayers() const { return m_players.size(); }
+        // Read on the existing channel owner, like GetNumPlayers().
+        bool HasMember(ObjectGuid guid) const { return IsOn(guid); }
         uint8 GetFlags() const { return m_flags; }
         bool HasFlag(uint8 flag) { return m_flags & flag; }
         void SetSecurityLevel(uint8 sec) { m_securityLevel = sec; }
@@ -188,6 +194,8 @@ class Channel
         Team GetTeam() const { return m_Team;}
 
         void Join(ObjectGuid guid, const char *password, bool checkPassword = true);
+        // Player* overload.
+        void Join(Player const* player, const char* password = "");
         void Leave(ObjectGuid guid, bool send = true);
         void KickOrBan(ObjectGuid guid, const char *targetName, bool ban);
         void Kick(ObjectGuid guid, const char *targetName) { KickOrBan(guid, targetName, false); }
@@ -221,6 +229,13 @@ class Channel
 
         // Should be only called from ChannelBroadcaster
 		void Say(ObjectGuid guid, const char* what, uint32 lang = LANG_UNIVERSAL, bool skipCheck = false);
+
+        // Why Say() would refuse a message of this sender instead of delivering it: not on the
+        // channel, muted there, or no moderator while the channel is moderated. Shared by Say()
+        // (which answers with the notification) and AsyncSay() (which fires the module hook
+        // only for messages that pass).
+        enum SayRefusal { SAY_OK, SAY_NOT_MEMBER, SAY_MUTED, SAY_NOT_MODERATOR };
+        SayRefusal CheckSay(ObjectGuid guid, bool skipCheck);
 
         // initial packet data (notify type and channel name)
         void MakeNotifyPacket(WorldPacket *data, uint8 notify_type);

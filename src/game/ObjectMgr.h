@@ -40,6 +40,7 @@
 #include "Policies/Singleton.h"
 #include "SQLStorages.h"
 #include "Conditions.h"
+#include "BotTrainerIndex.h"
 
 #include <string>
 #include <map>
@@ -52,10 +53,11 @@ class Item;
 
 struct GameTele
 {
-    float  x = 0.0f;
-    float  y = 0.0f;
-    float  z = 0.0f;
-    float  o = 0.0f;
+    // bot uses position_x/y/z naming via anon unions.
+    union { float  x = 0.0f; float position_x; };
+    union { float  y = 0.0f; float position_y; };
+    union { float  z = 0.0f; float position_z; };
+    union { float  o = 0.0f; float orientation; };
     uint32 mapId = 0;
     std::string name;
     std::wstring wnameLow;
@@ -316,6 +318,7 @@ typedef robin_hood::unordered_map<uint32,ItemLocale> ItemLocaleMap;
 typedef robin_hood::unordered_map<uint32,QuestLocale> QuestLocaleMap;
 typedef robin_hood::unordered_map<uint32,PageTextLocale> PageTextLocaleMap;
 typedef robin_hood::unordered_map<int32,MangosStringLocale> MangosStringLocaleMap;
+typedef robin_hood::unordered_map<std::string, MangosStringLocaleMap> ModuleStringLocaleMap;
 typedef robin_hood::unordered_map<uint32,QuestGreetingLocale> QuestGreetingLocaleMap;
 typedef robin_hood::unordered_map<uint32,GossipMenuItemsLocale> GossipMenuItemsLocaleMap;
 typedef robin_hood::unordered_map<uint32,PointOfInterestLocale> PointOfInterestLocaleMap;
@@ -695,9 +698,12 @@ class ObjectMgr
         void LoadChatChannels();
         ChatChannelsEntry const* GetChannelEntryFor(uint32 channelId);
         ChatChannelsEntry const* GetChannelEntryFor(std::string const& name);
+        robin_hood::unordered_map<uint32, ChatChannelsEntry> const& GetChatChannelsMap() const { return m_chatChannelsMap; }
 
         static Player* GetPlayer(const char* name) { return ObjectAccessor::FindPlayerByName(name);}
         static Player* GetPlayer(ObjectGuid guid) { return ObjectAccessor::FindPlayer(guid); }
+        // cmangos signature: GetPlayer(guid, inWorld).
+        static Player* GetPlayer(ObjectGuid guid, bool /*inWorld*/) { return ObjectAccessor::FindPlayer(guid); }
 
         GameObjectInfo const* GetGameObjectInfo(uint32 id)
         {
@@ -805,6 +811,12 @@ class ObjectMgr
         void LoadTaxiNodes();
         TaxiNodesEntry const* GetTaxiNodeEntry(uint32 id) const { return id < GetMaxTaxiNodeId() ? m_TaxiNodes[id].get() : nullptr; }
         uint32 GetMaxTaxiNodeId() const { return m_TaxiNodes.size(); }
+        void SetTaxiNodeEntry(uint32 id, std::unique_ptr<TaxiNodesEntry>& entry)
+        {
+            if (m_TaxiNodes.size() <= id)
+                m_TaxiNodes.resize(id + 1);
+            m_TaxiNodes[id] = std::move(entry);
+        }
 
         Quest const* GetQuestTemplate(uint32 quest_id) const
         {
@@ -948,6 +960,7 @@ class ObjectMgr
 
         bool LoadMangosStrings(DatabaseType& db, char const* table, int32 min_value, int32 max_value, bool extra_content);
         bool LoadMangosStrings() { return LoadMangosStrings(WorldDatabase,"mangos_string",MIN_MANGOS_STRING_ID,MAX_MANGOS_STRING_ID, false); }
+        bool LoadModuleStrings();
         void LoadBroadcastTexts();
         void LoadBroadcastTextLocales();
         bool LoadQuestGreetings();
@@ -959,6 +972,18 @@ class ObjectMgr
         void LoadCreatureTemplate(uint32 entry);
         void CheckCreatureTemplate(CreatureInfo* cInfo);
 
+        // The ported dungeon module walks every spawn once at load to join its
+        // boss list with coordinates. Read-only reference; the map is stable
+        // after startup, which is when the module reads it.
+        CreatureDataMap const& GetAllCreatureData() const { return m_CreatureDataMap; }
+        // AzerothCore chains spawns so one respawns another; this core's
+        // creature_linking answers a different question (aggro/despawn ties)
+        // and no table stores respawn links. An empty guid says "no link",
+        // which the one caller treats as the common case.
+        ObjectGuid GetLinkedRespawnGuid(ObjectGuid /*spawn*/) const { return ObjectGuid(); }
+        // The ported zone-line index walks every teleport trigger once at load.
+        AreaTriggerTeleportMap const& GetAllAreaTriggerTeleports() const { return m_AreaTriggerTeleportMap; }
+        std::vector<uint32> GetBotTrainerEntries(uint32 playerClass) const { return m_botTrainerIndex.Snapshot(playerClass); }
         CreatureInfo const* GetCreatureTemplate(uint32 id) const
         {
             auto itr = m_creatureInfoMap.find(id);
@@ -1255,6 +1280,8 @@ class ObjectMgr
 
         const char *GetMangosString(int32 entry, int locale_idx) const;
         const char *GetMangosStringForDBCLocale(int32 entry) const { return GetMangosString(entry,DBCLocaleIndex); }
+        const char* GetModuleString(std::string const& module, uint32 id, int locale_idx) const;
+        const char* GetModuleString(char const* module, uint32 id, int locale_idx) const { return GetModuleString(std::string(module ? module : ""), id, locale_idx); }
         int32 GetDBCLocaleIndex() const { return DBCLocaleIndex; }
         void SetDBCLocaleIndex(uint32 lang) { DBCLocaleIndex = GetIndexForLocale(LocaleConstant(lang)); }
 
@@ -1305,6 +1332,18 @@ class ObjectMgr
 
         int GetIndexForLocale(LocaleConstant loc);
         LocaleConstant GetLocaleForIndex(int i);
+        // cmangos has GetStorageLocaleIndexFor; semantics same as GetIndexForLocale.
+        int GetStorageLocaleIndexFor(LocaleConstant loc) { return GetIndexForLocale(loc); }
+        // GetGossipText: cmangos name; Penqle uses GetNpcText.
+        NpcText const* GetGossipText(uint32 entry) const { return GetNpcText(entry); }
+        // IsEncounter: cmangos checks if creature is an encounter (raid boss). Stub returns false.
+        bool IsEncounter(uint32 /*creatureEntry*/, uint32 /*mapId*/ = 0) const { return false; }
+        // Locale-strings getters: cmangos returns localized name strings via out-params.
+        // Stub no-op — bot falls back to default-locale fields.
+        // Templated to accept either std::string* or const char** out-param.
+        template<typename T> bool GetQuestLocaleStrings(uint32 /*entry*/, int32 /*loc_idx*/, T /*name*/) const { return false; }
+        template<typename T> bool GetCreatureLocaleStrings(uint32 /*entry*/, int32 /*loc_idx*/, T /*name*/) const { return false; }
+        template<typename T> bool GetItemLocaleStrings(uint32 /*entry*/, int32 /*loc_idx*/, T /*name*/) const { return false; }
 
         bool IsConditionSatisfied(uint32 conditionId, WorldObject const* target, Map const* map, WorldObject const* source, ConditionSource conditionSourceType) const;
 
@@ -1476,6 +1515,7 @@ class ObjectMgr
         uint32 GetPlayerWorldMaskByGUID(const uint64 guid);
         void SetPlayerWorldMask(const uint64 guid, uint32 newWorldMask);
         std::map<uint32, uint32> m_PlayerPhases;
+        std::mutex m_PlayerPhasesLock;
 
         // Saving Variables
         SavedVariable& _InsertVariable(uint32 index, uint32 value, bool saved);
@@ -1494,6 +1534,10 @@ class ObjectMgr
         void LoadPlayerCacheData(uint32 lowGuid = 0);
         PlayerCacheData* GetPlayerDataByGUID(uint32 lowGuid) const;
         PlayerCacheData* GetPlayerDataByName(std::string const& name) const;
+        // Read-only view for modules that walk the whole cache (mod-dungeon-clear
+        // claims offline bot-account characters for its test roster). Same
+        // pattern as GetAllCreatureData / ScriptMgr::GetAllAreaTriggerScripts.
+        PlayerCacheDataMap const& GetAllPlayerCacheData() const { return m_playerCacheData; }
         void GetPlayerDataForAccount(uint32 accountId, std::vector<PlayerCacheData*>& data) const;
         PlayerCacheData* InsertPlayerInCache(Player *pPlayer);
         PlayerCacheData* InsertPlayerInCache(uint32 lowGuid, uint32 race, uint32 _class, uint32 uiGender, uint32 account, std::string const& name, uint32 level, uint32 zoneId, uint8 hardcoreStatus);
@@ -1627,6 +1671,14 @@ class ObjectMgr
         IdGenerator<uint32> m_GroupIds;
         IdGenerator<uint32> m_PetitionIds;
         uint32              m_NextPetNumber;
+        // GeneratePetNumber reads this counter, asks the cache for the next free
+        // number at or above it, and writes it back - three steps with nothing
+        // between them. Two map threads entering together both saw the same
+        // value and both handed out the same pet number, and the second save hit
+        // "Duplicate entry for key PRIMARY" on character_pet. With a thousand
+        // bots summoning pets from several threads it turned up 34 times in one
+        // nine hour run.
+        std::mutex          m_PetNumberLock;
         std::set<uint32>    m_AuctionsIds;
         uint32              m_NextAuctionId;
 
@@ -1775,6 +1827,7 @@ class ObjectMgr
         NpcTextMap m_NpcTextMap;
         PageTextLocaleMap m_PageTextLocaleMap;
         MangosStringLocaleMap m_MangosStringLocaleMap;
+        ModuleStringLocaleMap m_ModuleStringLocaleMap;
         BroadcastTextLocaleMap m_BroadcastTextLocaleMap;
         QuestGreetingLocaleMap m_QuestGreetingLocaleMap[QUESTGIVER_TYPE_MAX];
         TrainerGreetingLocaleMap m_TrainerGreetingLocaleMap;
@@ -1789,6 +1842,7 @@ class ObjectMgr
         SoundEntryMap m_SoundEntriesMap;
         ItemPrototypeMap m_itemPrototypesMap;
         CreatureInfoMap m_creatureInfoMap;
+        BotTrainerIndex m_botTrainerIndex;
         GameObjectInfoMap m_GameObjectInfoMap;
 
         typedef std::vector<std::unique_ptr<SkillLineAbilityEntry>> SkillLineAbiilityStore;

@@ -13,8 +13,14 @@
 #include <locale>
 #include <iostream>
 #include <regex>
+#include <algorithm>
+#include <cctype>
 
 using namespace std::filesystem;
+
+#ifndef TW_ENABLED_MODULES
+#define TW_ENABLED_MODULES ""
+#endif
 
 DBUpdater::AutoUpdater sAutoUpdater;
 
@@ -23,10 +29,69 @@ namespace DBUpdater
     static constexpr const char* UpdateExtension = ".sql";
     static constexpr const char* MigrationTable = "migrations";
 
-    std::unordered_map<std::string, FileMigration> AutoUpdater::LoadFileMigrations(const directory_entry& targetPath) const
+    namespace
+    {
+        std::string Trim(std::string value)
+        {
+            auto const isSpace = [](unsigned char c) { return std::isspace(c); };
+            value.erase(value.begin(), std::find_if(value.begin(), value.end(), [&](char c) { return !isSpace(static_cast<unsigned char>(c)); }));
+            value.erase(std::find_if(value.rbegin(), value.rend(), [&](char c) { return !isSpace(static_cast<unsigned char>(c)); }).base(), value.end());
+            return value;
+        }
+
+        std::string ToLower(std::string value)
+        {
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return std::tolower(c); });
+            return value;
+        }
+
+        std::vector<std::string> SplitCommaSeparated(std::string const& value)
+        {
+            std::vector<std::string> result;
+            std::string::size_type start = 0;
+
+            while (start <= value.size())
+            {
+                std::string::size_type end = value.find(',', start);
+                std::string item = Trim(value.substr(start, end == std::string::npos ? std::string::npos : end - start));
+                if (!item.empty())
+                    result.push_back(item);
+
+                if (end == std::string::npos)
+                    break;
+
+                start = end + 1;
+            }
+
+            return result;
+        }
+
+        bool IsAllModulesAllowed(std::vector<std::string> const& allowedModules)
+        {
+            return std::any_of(allowedModules.begin(), allowedModules.end(), [](std::string const& moduleName)
+            {
+                return ToLower(moduleName) == "all";
+            });
+        }
+
+        std::string ModuleLogSuffix(std::string const& moduleName)
+        {
+            return moduleName.empty() ? "" : " for module " + moduleName;
+        }
+    }
+
+    std::string AutoUpdater::GetMigrationKey(std::string const& moduleName, std::string const& hash) const
+    {
+        return moduleName + ":" + hash;
+    }
+
+    std::unordered_map<std::string, FileMigration> AutoUpdater::LoadFileMigrations(const directory_entry& targetPath, std::string const& moduleName) const
     {
         if (!targetPath.exists())
         {
+            if (!moduleName.empty())
+                return {};
+
             sLog.outInfo("[DB Auto-Updater] Path doesn\'t contain %s updates, creating..", targetPath.path().filename().string().c_str());
             create_directory(targetPath);
             return {}; //can't contain any updates if it didn't exist so no reason to check.
@@ -55,10 +120,11 @@ namespace DBUpdater
             {
                 migration.ModifiedAt = update.last_write_time();
                 migration.Name = update.path().stem().string();
+                migration.Module = moduleName;
 
-                auto hash = migration.Hash;
+                auto migrationKey = GetMigrationKey(migration.Module, migration.Hash);
 
-                fileMigrations.insert({ hash, std::move(migration) });
+                fileMigrations.insert({ migrationKey, std::move(migration) });
             }
         }
         return fileMigrations;
@@ -69,6 +135,7 @@ namespace DBUpdater
         targetDatabase->DirectPExecute("CREATE TABLE IF NOT EXISTS `%s` (\
             `Id` INT(10) UNSIGNED NOT NULL AUTO_INCREMENT,\
             `Name` VARCHAR(255) NOT NULL DEFAULT \'0\' COLLATE \'utf8_general_ci\',\
+            `Module` VARCHAR(255) NOT NULL DEFAULT \'\' COLLATE \'utf8_general_ci\',\
             `Hash` VARCHAR(128) NOT NULL DEFAULT \'0\' COLLATE \'utf8_general_ci\',\
             `AppliedAt` DATETIME NOT NULL,\
             PRIMARY KEY(`Id`) USING BTREE\
@@ -77,11 +144,14 @@ namespace DBUpdater
             ENGINE = InnoDB\
             ;", MigrationTable);
 
+        std::unique_ptr<QueryResult> moduleColumnResult = std::unique_ptr<QueryResult>{ targetDatabase->PQuery("SHOW COLUMNS FROM `%s` LIKE 'Module'", MigrationTable) };
+        if (!moduleColumnResult)
+            targetDatabase->DirectPExecute("ALTER TABLE `%s` ADD COLUMN `Module` VARCHAR(255) NOT NULL DEFAULT '' COLLATE 'utf8_general_ci' AFTER `Name`", MigrationTable);
 
         std::unordered_map<std::string, Migration> dbMigrations;
 
         {
-            std::unique_ptr<QueryResult> tableResult = std::unique_ptr<QueryResult>{ targetDatabase->PQuery("SELECT `Name`, `Hash` FROM `%s`", MigrationTable) };
+            std::unique_ptr<QueryResult> tableResult = std::unique_ptr<QueryResult>{ targetDatabase->PQuery("SELECT `Name`, `Hash`, `Module` FROM `%s`", MigrationTable) };
 
             if (!tableResult)
             {
@@ -93,38 +163,39 @@ namespace DBUpdater
             do {
                 auto fields = tableResult->Fetch();
                 auto hash = fields[1].GetCppString();
+                auto module = fields[2].GetCppString();
 
-                dbMigrations.insert({ hash, Migration{ hash, fields[0].GetCppString() } });
+                dbMigrations.insert({ GetMigrationKey(module, hash), Migration{ hash, fields[0].GetCppString(), module } });
             } while (tableResult->NextRow());
         }
 
         return dbMigrations;
     }
 
-    bool AutoUpdater::ProcessTargetUpdates(const fs::directory_entry& targetPath, DatabaseType* targetDatabase, bool region, bool sortByName) const
+    bool AutoUpdater::ProcessTargetUpdates(const fs::directory_entry& targetPath, DatabaseType* targetDatabase, bool region, bool sortByName, std::string const& moduleName) const
     {
-        auto fileMigrations = LoadFileMigrations(targetPath);
+        auto fileMigrations = LoadFileMigrations(targetPath, moduleName);
         auto dbMigrations = LoadDatabaseMigrations(targetDatabase);
 
         std::vector<FileMigration> updates;
 
         for (auto& fileMigrationPair : fileMigrations)
         {
-            const auto& hash = fileMigrationPair.first;
+            const auto& migrationKey = fileMigrationPair.first;
             const auto& migration = fileMigrationPair.second;
 
-            if (dbMigrations.find(hash) != dbMigrations.end()) // already applied, skip
+            if (dbMigrations.find(migrationKey) != dbMigrations.end()) // already applied, skip
             {
-                if (migration.Name != dbMigrations[hash].Name)
-                    sLog.outInfo("[DB Auto-Updater] Migration with hash %s was migrated with name %s but now has name %s.", migration.Hash.c_str(), 
-                        dbMigrations[hash].Name.c_str(), migration.Name.c_str());
+                if (migration.Name != dbMigrations[migrationKey].Name)
+                    sLog.outInfo("[DB Auto-Updater] Migration with hash %s%s was migrated with name %s but now has name %s.", migration.Hash.c_str(),
+                        ModuleLogSuffix(migration.Module).c_str(), dbMigrations[migrationKey].Name.c_str(), migration.Name.c_str());
 
-                dbMigrations.erase(hash);
+                dbMigrations.erase(migrationKey);
                 continue;
             }
 
             updates.push_back(std::move(fileMigrationPair.second));
-            dbMigrations.erase(hash);
+            dbMigrations.erase(migrationKey);
         }
 
 
@@ -132,8 +203,9 @@ namespace DBUpdater
         {
             for (const auto& dbMigration : dbMigrations)
             {
-                auto name = dbMigration.second.Name;
-                sLog.outInfo("[DB Auto-Updater] Migration %s with hash %s exists in DB but not as file, old migration?", dbMigration.second.Name.c_str(), dbMigration.first.c_str());
+                if (dbMigration.second.Module == moduleName)
+                    sLog.outInfo("[DB Auto-Updater] Migration %s with hash %s%s exists in DB but not as file, old migration?", dbMigration.second.Name.c_str(),
+                        dbMigration.second.Hash.c_str(), ModuleLogSuffix(dbMigration.second.Module).c_str());
             }
         }
 
@@ -162,18 +234,60 @@ namespace DBUpdater
             if (!ExecuteUpdate(update, targetDatabase))
             {
                 sLog.outError("[DB Auto-Updater] Migration %s with hash %s failed to apply.", update.Name.c_str(), update.Hash.c_str());
-                std::string line;
-                std::getline(std::cin, line);
+                // (removed a leftover std::getline(std::cin) here that paused startup
+                // waiting for Enter after a failed migration - blocks a service /
+                // pipeline start with an open stdin; the return below already aborts.
+                // The intentional crash-pause getline in Log.cpp is untouched.)
                 return false;
            }
         }
         return true;
     }
 
+    bool AutoUpdater::ProcessModuleUpdates(const fs::path& modulesPath, const std::string& targetFolder, DatabaseType* targetDatabase, bool sortByName) const
+    {
+        directory_entry modulesRoot{ modulesPath };
+        if (!modulesRoot.exists())
+        {
+            sLog.outInfo("[DB Auto-Updater] Module update path %s does not exist, skipped.", modulesPath.string().c_str());
+            return true;
+        }
+
+        std::vector<std::string> allowedModules = SplitCommaSeparated(sConfig.GetStringDefault("Database.AutoUpdate.AllowedModules", "all"));
+        if (allowedModules.empty())
+            return true;
+
+        std::vector<std::string> moduleNames;
+        if (IsAllModulesAllowed(allowedModules))
+        {
+            moduleNames = SplitCommaSeparated(TW_ENABLED_MODULES);
+            std::sort(moduleNames.begin(), moduleNames.end());
+        }
+        else
+        {
+            moduleNames = std::move(allowedModules);
+        }
+
+        for (std::string const& moduleName : moduleNames)
+        {
+            path moduleUpdatePath = modulesPath / moduleName / "data" / "sql" / targetFolder;
+            if (!exists(moduleUpdatePath) || !is_directory(moduleUpdatePath))
+                continue;
+
+            sLog.outInfo("[DB Auto-Updater] Processing module %s updates from %s.", moduleName.c_str(), moduleUpdatePath.string().c_str());
+            if (!ProcessTargetUpdates(directory_entry{ moduleUpdatePath }, targetDatabase, false, sortByName, moduleName))
+                return false;
+        }
+
+        return true;
+    }
+
     bool AutoUpdater::ExecuteUpdate(const FileMigration& migration, DatabaseType* targetDatabase) const
     {
-        sLog.outInfo("[DB Auto-Updater] Attempting to execute update %s, hash %s.", migration.Name.c_str(), migration.Hash.c_str());
-        sLog.out(LOG_AUTOUPDATER, "[INFO] Attempting to execute update %s, hash %s.", migration.Name.c_str(), migration.Hash.c_str());
+        sLog.outInfo("[DB Auto-Updater] Attempting to execute update %s%s, hash %s.", migration.Name.c_str(),
+            ModuleLogSuffix(migration.Module).c_str(), migration.Hash.c_str());
+        sLog.out(LOG_AUTOUPDATER, "[INFO] Attempting to execute update %s%s, hash %s.", migration.Name.c_str(),
+            ModuleLogSuffix(migration.Module).c_str(), migration.Hash.c_str());
         std::string sqlString{ migration.FileData.begin(), migration.FileData.end() };
 
 
@@ -326,7 +440,8 @@ namespace DBUpdater
             targetDatabase->Execute(query.c_str());
         }
 
-        targetDatabase->PExecute("INSERT INTO `%s` (`Name`, `Hash`, `AppliedAt`) VALUES (\'%s\', \'%s\', NOW());", MigrationTable, migration.Name.c_str(), migration.Hash.c_str());
+        targetDatabase->PExecute("INSERT INTO `%s` (`Name`, `Module`, `Hash`, `AppliedAt`) VALUES (\'%s\', \'%s\', \'%s\', NOW());",
+            MigrationTable, migration.Name.c_str(), migration.Module.c_str(), migration.Hash.c_str());
 
         bool res = targetDatabase->CommitTransactionDirect();
 
@@ -385,8 +500,18 @@ namespace DBUpdater
         auto authUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.AuthUpdateName", "Logon");
         auto charUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.CharUpdateName", "Char");
         auto worldUpdateFolder = sConfig.GetStringDefault("Database.AutoUpdate.WorldUpdateName", "World");
+        // Core database folder names can differ from the module convention.
+        // In particular ManTech uses "character", while native modules use "char".
+        auto moduleAuthFolder = sConfig.GetStringDefault("Database.AutoUpdate.ModuleAuthUpdateName", "auth");
+        auto moduleCharFolder = sConfig.GetStringDefault("Database.AutoUpdate.ModuleCharUpdateName", "char");
+        auto moduleWorldFolder = sConfig.GetStringDefault("Database.AutoUpdate.ModuleWorldUpdateName", "world");
         bool sortByName = sConfig.GetBoolDefault("Database.AutoUpdate.SortByName", false);
         path folderPath{ pathString };
+#ifdef TW_SOURCE_MODULES_DIR
+        path modulesPath{ TW_SOURCE_MODULES_DIR };
+#else
+        path modulesPath{ "modules" };
+#endif
 
 
         directory_entry logonUpdatePath{ folderPath / authUpdateFolder };
@@ -400,6 +525,15 @@ namespace DBUpdater
             return false;
 
         if (!ProcessTargetUpdates(worldUpdatePath, &WorldDatabase, false, sortByName))
+            return false;
+
+        if (!ProcessModuleUpdates(modulesPath, moduleAuthFolder, &LoginDatabase, sortByName))
+            return false;
+
+        if (!ProcessModuleUpdates(modulesPath, moduleCharFolder, &CharacterDatabase, sortByName))
+            return false;
+
+        if (!ProcessModuleUpdates(modulesPath, moduleWorldFolder, &WorldDatabase, sortByName))
             return false;
 
 
@@ -427,4 +561,6 @@ namespace DBUpdater
         return true;
 
     }
+    // End configured migration dispatch.
+
 }

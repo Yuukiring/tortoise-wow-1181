@@ -197,9 +197,10 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/dep/libdeflate
   ${CMAKE_SOURCE_DIR}/src/framework
   ${CMAKE_BINARY_DIR}
-  ${ACE_INCLUDE_DIR}
-  ${MYSQL_INCLUDE_DIR} 
+  # First - see the OpenSSL/ACE/TBB ordering note in src/mangosd's CMakeLists.txt.
   ${OPENSSL_INCLUDE_DIR}
+  ${ACE_INCLUDE_DIR}
+  ${MYSQL_INCLUDE_DIR}
 )
 
 if(WIN32)
@@ -211,6 +212,10 @@ endif()
 add_library(shared STATIC
   ${shared_SRCS}
 )
+
+if(BUILD_ELUNA)
+  target_compile_definitions(shared PUBLIC ENABLE_ELUNA)
+endif()
 
 if(USE_DISCORD_BOT)
     target_link_libraries(shared PUBLIC

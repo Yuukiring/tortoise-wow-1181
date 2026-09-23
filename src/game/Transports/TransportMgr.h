@@ -82,18 +82,24 @@ struct TransportTemplate
 };
 
 
+struct TransportAnimation;  // Defined in src/modules/PlayerBots/cmangos-compat-shim.h.
+
 class TransportMgr
 {
         friend void LoadDBCStores(std::string const&);
 
     public:
 
+        // bot calls GetTransportAnimInfo for elevator pathing.
+        // Penqle has no TransportAnim.dbc; stub returns nullptr.
+        TransportAnimation const* GetTransportAnimInfo(uint32 /*entry*/) const { return nullptr; }
+
         void Unload();
 
         void LoadTransportTemplates();
 
         // Creates a transport using given GameObject template entry
-        Transport* CreateTransport(uint32 entry, uint32 guid = 0);
+        Transport* CreateTransport(uint32 entry);
 
         // Spawns all continent transports, used at core startup
         void SpawnContinentTransports();
@@ -117,7 +123,7 @@ class TransportMgr
         TransportMgr& operator=(TransportMgr const&);
 
         // Generates and precaches a path for transport to avoid generation each time transport instance is created
-        void GeneratePath(GameObjectInfo const* goInfo, TransportTemplate* transport);
+        bool GeneratePath(GameObjectInfo const* goInfo, TransportTemplate* transport);
 
         // Container storing transport templates
         TransportTemplates _transportTemplates;

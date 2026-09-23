@@ -29,6 +29,7 @@
 #include "Log.h"
 #include "MapManager.h"
 #include "ObjectGuid.h"
+#include "ScriptObjects.h"
 #include "ScriptMgr.h"
 #include "SpellMgr.h"
 #include "UpdateMask.h"
@@ -445,6 +446,8 @@ Position const* ObjectMgr::GetCinematicInitialPosition(uint32 cinematicId)
 // ALTER TABLE characters ADD COLUMN world_phase_mask int(11) unsigned not null default 0;
 void ObjectMgr::LoadPlayerPhaseFromDb()
 {
+    std::lock_guard<std::mutex> lock(m_PlayerPhasesLock);
+
     m_PlayerPhases.clear();
 
     std::unique_ptr<QueryResult> result(CharacterDatabase.Query("SELECT guid, world_phase_mask FROM characters"));
@@ -467,10 +470,13 @@ void ObjectMgr::LoadPlayerPhaseFromDb()
 
 uint32 ObjectMgr::GetPlayerWorldMaskByGUID(const uint64 guid)
 {
+    std::lock_guard<std::mutex> lock(m_PlayerPhasesLock);
     return m_PlayerPhases[GUID_LOPART(guid)];
 }
 void ObjectMgr::SetPlayerWorldMask(const uint64 guid, uint32 newWorldMask)
 {
+    std::lock_guard<std::mutex> lock(m_PlayerPhasesLock);
+
     if (m_PlayerPhases[GUID_LOPART(guid)] == newWorldMask)
         return;
 
@@ -1112,6 +1118,30 @@ void ObjectMgr::LoadCreatureTemplates()
         LoadCreatureInfo(fields);
         
     } while (result->NextRow());
+
+    // Bind scripts the DB did not: the Farraki Arena trio (Zul Farrak 1.18) has
+    // its script_name rows in update 20260626153218, which a realm may not have
+    // applied - then Razjal is a friendly NPC without AI or gossip and the arena
+    // can never start (2026-09-05). Only touches rows with NO script of their own.
+    struct FallbackCreatureScript { uint32 entry; char const* script; };
+    static FallbackCreatureScript const kFallbackCreatureScripts[] =
+    {
+        { 62496, "npc_kathzen_the_brutal" },
+        { 62497, "npc_juthza_the_cunning" },
+        { 62498, "npc_champion_razjal_the_quick" },
+    };
+    for (FallbackCreatureScript const& fb : kFallbackCreatureScripts)
+    {
+        CreatureInfo* info = const_cast<CreatureInfo*>(GetCreatureTemplate(fb.entry));
+        if (!info || info->script_id)
+            continue;
+        uint32 const scriptId = sScriptMgr.GetScriptId(fb.script);
+        if (!scriptId)
+            continue;
+        info->script_id = scriptId;
+        sLog.outInfo("BindFallbackCreatureScripts: creature %u (%s) had no script in the DB -> bound %s",
+                     fb.entry, info->name.c_str(), fb.script);
+    }
 }
 
 void ObjectMgr::LoadCreatureTemplate(uint32 entry)
@@ -1219,6 +1249,12 @@ void ObjectMgr::LoadCreatureInfo(Field* fields)
     pInfo->phase_quest_id = fields[78].GetUInt32();
     pInfo->script_id = sScriptMgr.GetScriptId(fields[79].GetString());
     CheckCreatureTemplate(pInfo.get());
+    // Refresh on both initial loading and single-template reloads. Class-zero
+    // non-trainers cannot match a player class and need not enter this index.
+    bool const commonTrainer = pInfo->trainer_type == TRAINER_TYPE_TRADESKILLS;
+    bool const classTrainer = (pInfo->trainer_type == TRAINER_TYPE_CLASS ||
+        pInfo->trainer_type == TRAINER_TYPE_PETS) && pInfo->trainer_class != 0;
+    m_botTrainerIndex.Update(entry, pInfo->trainer_class, commonTrainer, commonTrainer || classTrainer);
 }
 
 template <class T>
@@ -2530,8 +2566,14 @@ void ObjectMgr::LoadItemPrototypes()
 
                 if (proto->Spells[j].SpellCategory > 0)
                 {
+                    // An item's spell category is a free-form grouping key for shared
+                    // cooldowns: the value is only ever used as a map key by
+                    // Unit::HasSpellCategoryCooldown, never looked up in SpellCategory.dbc
+                    // (this is that store's only reader in the whole core). A category the
+                    // DBC does not list still works, so this is a note, not a fault - the
+                    // value is deliberately left in place rather than cleared.
                     if (!sSpellCategoryStore.LookupEntry(proto->Spells[j].SpellCategory))
-                        sLog.outErrorDb("Item (Entry: %u) has wrong (not existing) spell category in spellcategory_%d (%u)", i, j + 1, proto->Spells[j].SpellCategory);
+                        sLog.outDetail("Item (Entry: %u) has spell category in spellcategory_%d (%u) that is not listed in SpellCategory.dbc", i, j + 1, proto->Spells[j].SpellCategory);
                 }
             }
         }
@@ -6199,12 +6241,31 @@ void ObjectMgr::LoadPetNames()
 
 void ObjectMgr::LoadPetNumber()
 {
-    m_NextPetNumber = 1;
+    // Like CMaNGOS, allocate above persisted pet identities. Include dependent
+    // tables: historical replacement can leave rows without character_pet,
+    // and reusing their identity would attach old spells to an unrelated pet.
+    QueryResult* result = CharacterDatabase.Query(
+        "SELECT MAX(pet_id) FROM ("
+        "SELECT COALESCE(MAX(id),0) AS pet_id FROM character_pet UNION ALL "
+        "SELECT COALESCE(MAX(guid),0) FROM pet_spell UNION ALL "
+        "SELECT COALESCE(MAX(guid),0) FROM pet_spell_cooldown UNION ALL "
+        "SELECT COALESCE(MAX(guid),0) FROM pet_aura) persisted_pets");
+    if (!result)
+        sLog.outError("Cannot initialize pet identities from the character database.");
+    MANGOS_ASSERT(result);
+    const uint32 highest = result->Fetch()[0].GetUInt32();
+    delete result;
+    MANGOS_ASSERT(highest < ObjectGuid::GetMaxCounter(HIGHGUID_PET));
+    m_NextPetNumber = highest + 1;
+    sLog.outString(">> Next pet number: %u", m_NextPetNumber);
 }
 
 uint32 ObjectMgr::GeneratePetNumber()
 {
+    std::lock_guard<std::mutex> guard(m_PetNumberLock);
+
     m_NextPetNumber = sCharacterDatabaseCache.GetNextAvailablePetNumber(m_NextPetNumber);
+    MANGOS_ASSERT(m_NextPetNumber && m_NextPetNumber <= ObjectGuid::GetMaxCounter(HIGHGUID_PET));
     return m_NextPetNumber++;
 }
 
@@ -7323,7 +7384,7 @@ void ObjectMgr::LoadBroadcastTexts()
         {
             if (!sEmotesStore.LookupEntry(bct.emoteId1))
             {
-                sLog.outErrorDb("BroadcastText (Id: %u) in table `broadcast_text` has emoteId2 %u but emote does not exist.", bct.entry, bct.emoteId1);
+                sLog.outErrorDb("BroadcastText (Id: %u) in table `broadcast_text` has emoteId1 %u but emote does not exist.", bct.entry, bct.emoteId1);
                 bct.emoteId1 = 0;
             }
         }
@@ -7332,7 +7393,7 @@ void ObjectMgr::LoadBroadcastTexts()
         {
             if (!sEmotesStore.LookupEntry(bct.emoteId2))
             {
-                sLog.outErrorDb("BroadcastText (Id: %u) in table `broadcast_text` has emoteId3 %u but emote does not exist.", bct.entry, bct.emoteId2);
+                sLog.outErrorDb("BroadcastText (Id: %u) in table `broadcast_text` has emoteId2 %u but emote does not exist.", bct.entry, bct.emoteId2);
                 bct.emoteId2 = 0;
             }
         }
@@ -7341,7 +7402,7 @@ void ObjectMgr::LoadBroadcastTexts()
         {
             if (!sEmotesStore.LookupEntry(bct.emoteId3))
             {
-                sLog.outErrorDb("BroadcastText (Id: %u) in table `broadcast_text` has EmoteId3 %u but emote does not exist.", bct.entry, bct.emoteId3);
+                sLog.outErrorDb("BroadcastText (Id: %u) in table `broadcast_text` has emoteId3 %u but emote does not exist.", bct.entry, bct.emoteId3);
                 bct.emoteId3 = 0;
             }
         }
@@ -7436,6 +7497,135 @@ const char *ObjectMgr::GetBroadcastText(uint32 id, int locale_index, uint8 gende
     }
 
     sLog.outErrorDb("Broadcast text id %i not found in DB.", id);
+    return "<error>";
+}
+
+bool ObjectMgr::LoadModuleStrings()
+{
+    m_ModuleStringLocaleMap.clear();
+
+    std::unique_ptr<QueryResult> tableResult(WorldDatabase.PQuery("SHOW TABLES LIKE 'module_string'"));
+    if (!tableResult)
+    {
+        sLog.outInfo("Table `module_string` not found, module strings not loaded.");
+        return true;
+    }
+
+    std::unique_ptr<QueryResult> result(WorldDatabase.Query("SELECT `module`, `id`, `content_default` FROM `module_string`"));
+    if (!result)
+    {
+        sLog.outInfo("Loaded 0 module strings.");
+        return true;
+    }
+
+    do
+    {
+        Field* fields = result->Fetch();
+        std::string module = fields[0].GetCppString();
+        uint32 id = fields[1].GetUInt32();
+
+        if (module.empty())
+        {
+            sLog.outErrorDb("Table `module_string` contains empty module name for id %u, ignored.", id);
+            continue;
+        }
+
+        if (!id)
+        {
+            sLog.outErrorDb("Table `module_string` contains reserved id 0 for module `%s`, ignored.", module.c_str());
+            continue;
+        }
+
+        MangosStringLocale& data = m_ModuleStringLocaleMap[module][id];
+        if (!data.Content.empty())
+        {
+            sLog.outErrorDb("Table `module_string` contains duplicate string `%s`:%u, ignored.", module.c_str(), id);
+            continue;
+        }
+
+        data.Content.resize(1);
+        data.Content[0] = fields[2].GetCppString();
+    }
+    while (result->NextRow());
+
+    if (sWorld.getConfig(CONFIG_BOOL_LOAD_LOCALES))
+    {
+        std::unique_ptr<QueryResult> localeTableResult(WorldDatabase.PQuery("SHOW TABLES LIKE 'module_string_locale'"));
+        if (localeTableResult)
+        {
+            std::unique_ptr<QueryResult> localeResult(WorldDatabase.Query("SELECT `module`, `id`, `locale`, `content` FROM `module_string_locale`"));
+            if (localeResult)
+            {
+                do
+                {
+                    Field* fields = localeResult->Fetch();
+                    std::string module = fields[0].GetCppString();
+                    uint32 id = fields[1].GetUInt32();
+                    uint32 locale = fields[2].GetUInt32();
+                    std::string content = fields[3].GetCppString();
+
+                    auto moduleItr = m_ModuleStringLocaleMap.find(module);
+                    if (moduleItr == m_ModuleStringLocaleMap.end())
+                    {
+                        sLog.outErrorDb("Table `module_string_locale` contains locale for nonexistent module string `%s`:%u, skipped.", module.c_str(), id);
+                        continue;
+                    }
+
+                    auto stringItr = moduleItr->second.find(id);
+                    if (stringItr == moduleItr->second.end())
+                    {
+                        sLog.outErrorDb("Table `module_string_locale` contains locale for nonexistent module string `%s`:%u, skipped.", module.c_str(), id);
+                        continue;
+                    }
+
+                    if (locale == LOCALE_enUS || locale >= MAX_LOCALE)
+                    {
+                        sLog.outErrorDb("Table `module_string_locale` contains invalid locale %u for module string `%s`:%u, skipped.", locale, module.c_str(), id);
+                        continue;
+                    }
+
+                    int idx = GetOrNewIndexForLocale(LocaleConstant(locale));
+                    if (idx >= 0)
+                    {
+                        MangosStringLocale& data = stringItr->second;
+                        if ((int32)data.Content.size() <= idx + 1)
+                            data.Content.resize(idx + 2);
+
+                        data.Content[idx + 1] = content;
+                    }
+                }
+                while (localeResult->NextRow());
+            }
+        }
+    }
+
+    size_t stringCount = 0;
+    for (ModuleStringLocaleMap::value_type const& modulePair : m_ModuleStringLocaleMap)
+        stringCount += modulePair.second.size();
+
+    sLog.outString("Loaded %u module string%s from %u module%s.", uint32(stringCount), stringCount == 1 ? "" : "s",
+        uint32(m_ModuleStringLocaleMap.size()), m_ModuleStringLocaleMap.size() == 1 ? "" : "s");
+    return true;
+}
+
+const char* ObjectMgr::GetModuleString(std::string const& module, uint32 id, int locale_idx) const
+{
+    ModuleStringLocaleMap::const_iterator moduleItr = m_ModuleStringLocaleMap.find(module);
+    if (moduleItr != m_ModuleStringLocaleMap.end())
+    {
+        MangosStringLocaleMap::const_iterator stringItr = moduleItr->second.find(id);
+        if (stringItr != moduleItr->second.end())
+        {
+            MangosStringLocale const& data = stringItr->second;
+            if ((int32)data.Content.size() > locale_idx + 1 && !data.Content[locale_idx + 1].empty())
+                return data.Content[locale_idx + 1].c_str();
+
+            if (!data.Content.empty())
+                return data.Content[0].c_str();
+        }
+    }
+
+    sLog.outErrorDb("Module string `%s`:%u not found in DB.", module.c_str(), id);
     return "<error>";
 }
 
@@ -9165,7 +9355,18 @@ void ObjectMgr::LoadConditions()
 bool ObjectMgr::IsConditionSatisfied(uint32 conditionId, WorldObject const* target, Map const* map, WorldObject const* source, ConditionSource conditionSourceType) const
 {
     if (const ConditionEntry* condition = sConditionStorage.LookupEntry<ConditionEntry>(conditionId))
-        return condition->Meets(target, map, source, conditionSourceType);
+    {
+        bool result = condition->Meets(target, map, source, conditionSourceType);
+        if (result)
+        {
+            result = !ScriptRegistry<ConditionScript>::ForEachWithReturn([&](ConditionScript* script)
+            {
+                return !script->OnConditionCheck(conditionId, const_cast<WorldObject*>(source), const_cast<WorldObject*>(target));
+            });
+        }
+
+        return result;
+    }
 
     return false;
 }
@@ -9224,9 +9425,8 @@ void ObjectMgr::LoadAreaTemplate()
 {
     sAreaStorage.Load();
 
-    for (auto itr = sAreaStorage.begin<AreaEntry>(); itr != sAreaStorage.end<AreaEntry>() ; ++itr)
-        if (itr->IsZone() && itr->MapId != 0 && itr->MapId != 1)
-            sAreaFlagByMapId.insert(AreaFlagByMapId::value_type(itr->MapId, itr->ExploreFlag));
+    // World initialization only: immutable indexed reads once map workers run.
+    AreaEntry::RebuildLookupIndex();
 }
 
 void ObjectMgr::LoadAreaLocales()
@@ -9522,22 +9722,47 @@ void ObjectMgr::LoadShop()
 			}
 
             CachedEntry.resize(1024);
-            int32 FormatResult = std::snprintf(CachedEntry.data(), 1024, "Entries:%u=%u=%s=%u=%s=%u=%u=%u=%.02f=%.02f=%.02f=%.02f=%u=%s=%u",
+            // patch7-A live client expects 13 `=`-delimited fields per
+            // Shop_ProcessEntries (Turtle_ShopUI.lua line 251+ in patch7.mpq):
+            //   info[1]  category
+            //   info[2]  subcategory  (tonumber — MUST be a number, not nil)
+            //   info[3]  name
+            //   info[4]  price
+            //   info[5]  text         (description; raw string)
+            //   info[6]  id           (= item entry; used in SetHyperlink "item:N:0:0:0")
+            //   info[7]  modelid
+            //   info[8]  itemid       (item display id)
+            //   info[9]  posx
+            //   info[10] posy
+            //   info[11] posz
+            //   info[12] rotation
+            //   info[13] holiday      (tonumber — MUST be a number; 0 = always-available)
+            // Pre-fix server sent 12 fields with Entry.Item at info[5] and
+            // Entry.ItemDisplayID at info[7] → SetHyperlink got the display id
+            // which fails as "Unknown link type". Plus holiday was missing →
+            // tonumber(nil) → entry.holiday > 0 throws "compare number with nil".
+            // patch7 client stores info[5] in entry["text"] but doesn't render
+            // it (tooltips come from SetHyperlink at line 285). WoW's addon
+            // message cap is 254 bytes — including pProto->Description here
+            // overflows for items with long descriptions (e.g. Race Change
+            // Tokens at 208 chars push total to ~377 bytes), truncating the
+            // message mid-description and losing info[6]+ → entry.id = nil →
+            // SetHyperlink("item:nil:0:0:0") fails as "Unknown link type" at
+            // line 285. Send empty string at info[5] so the message fits.
+			int32 FormatResult = std::snprintf(CachedEntry.data(), 1024, "Entries:%u=%u=%s=%u==%u=%u=%u=%.02f=%.02f=%.02f=%.02f=%u",
                 Entry.Category,
-                0, // TODO: subcategory
-                ItemName.c_str(),
+                0u,                         // 2: subcategory (server has no per-row subcategory; default 0)
+				ItemName.c_str(),
                 Entry.Price,
-                pProto->Description.c_str(),
-                Entry.Item,
+                                            // 5: description — empty (see comment above)
+                Entry.Item,                 // 6: actual item entry — used in SetHyperlink
                 Entry.ModelID,
                 Entry.ItemDisplayID,
                 Entry.Position.x,
                 Entry.Position.y,
                 Entry.Position.z,
                 Entry.Rotation,
-                0, // TODO: holiday
-                "", // TODO: colors
-                0); // TODO: gender
+                0u);                        // 13: holiday (server has no holiday-gating; 0 = always-available)
 
             MANGOS_ASSERT(FormatResult > 0);
             if (FormatResult > 1022)
@@ -10005,7 +10230,7 @@ void ObjectMgr::LoadChatChannels()
 
         uint32 id = fields[0].GetUInt32();
         ChatChannelsEntry channel;
-        channel.id = 1;
+        channel.id = id;
         channel.flags = fields[1].GetUInt32();
         channel.factionGroup = fields[2].GetUInt32();
 
@@ -10034,31 +10259,38 @@ ChatChannelsEntry const* ObjectMgr::GetChannelEntryFor(std::string const& name)
 {
     for (auto const& itr : m_chatChannelsMap)
     {
-        // need to remove %s from entryName if it exists before we match
-        for (const auto loc : itr.second.name)
+        for (std::string const& entryName : itr.second.name)
         {
-            std::string entryName(loc);
-            std::size_t removeString = entryName.find("%s");
-
             // Not loaded locale
             if (entryName.empty())
                 continue;
 
-            if (removeString != std::string::npos)
-                entryName.replace(removeString, 2, "");
+            std::size_t const zoneMarker = entryName.find("%s");
+            if (zoneMarker == std::string::npos)
+            {
+                if (entryName == name)
+                    return &itr.second;
+                continue;
+            }
 
-            if (name.find(entryName) != std::string::npos)
+            std::string const prefix = entryName.substr(0, zoneMarker);
+            std::string const suffix = entryName.substr(zoneMarker + 2);
+            if (name.size() < prefix.size() + suffix.size())
+                continue;
+
+            if (name.compare(0, prefix.size(), prefix) == 0 &&
+                name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
                 return &itr.second;
         }
 
         // search in shortcut name
-        for (const auto loc : itr.second.shortcut)
+        for (std::string const& shortcut : itr.second.shortcut)
         {
             // Not loaded locale
-            if (loc.empty())
+            if (shortcut.empty())
                 continue;
 
-            if (loc == name)
+            if (shortcut == name)
                 return &itr.second;
         }
     }

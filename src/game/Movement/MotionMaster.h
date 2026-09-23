@@ -57,6 +57,9 @@ enum MovementGeneratorType
     PATROL_MOTION_TYPE              = 16,
     CHARGE_MOTION_TYPE              = 17,
     DISTANCING_MOTION_TYPE          = 18,
+    // AzerothCore names the empty slot; nothing here ever reports it, so a
+    // ported switch simply never takes that arm.
+    NULL_MOTION_TYPE                = 255,
 };
 
 enum MMCleanFlag
@@ -129,12 +132,20 @@ class MotionMaster : std::stack<MovementGenerator *>
         void MoveRandom(bool use_current_position = false, float wander_distance = 0.0f, uint32 expire_time = 0);
         void MoveTargetedHome();
         void MoveFollow(Unit* target, float dist, float angle);
+        // bot's 5-arg form (extra flags ignored).
+        void MoveFollow(Unit* target, float dist, float angle, bool /*forceTarget*/, bool /*useAngle*/) { MoveFollow(target, dist, angle); }
         void MoveChase(Unit* target, float dist = 0.0f, float angle = 0.0f);
         void MoveConfused();
         void MoveFleeing(Unit* enemy, uint32 time = 0);
         void MoveFeared(Unit* enemy, uint32 time = 0);
         void MovePoint(uint32 id, const Movement::Location& location, uint32 options = MOVE_NONE, float speed = 0.0f, float finalOrientation = -10);
         void MovePoint(uint32 id, float x, float y, float z, uint32 options = MOVE_NONE, float speed = 0.0f, float finalOrientation = -10);
+        // AzerothCore appends generatePath and forceDestination. This generator
+        // always paths and never forces, so both are accepted and dropped -
+        // a ported caller asking for a straight line still gets a routed one.
+        void MovePoint(uint32 id, float x, float y, float z, uint32 options, float speed,
+                       float finalOrientation, bool /*generatePath*/, bool /*forceDestination*/)
+        { MovePoint(id, x, y, z, options, speed, finalOrientation); }
         void MoveSeekAssistance(float x,float y,float z);
         void MoveSeekAssistanceDistract(uint32 timer);
         void MoveWaypoint(uint32 startPoint = 0, uint32 source = 0, uint32 initialDelay = 0, uint32 overwriteGuid = 0, uint32 overwriteEntry = 0, bool repeat = true);
@@ -146,6 +157,11 @@ class MotionMaster : std::stack<MovementGenerator *>
         void MoveCharge(Unit* target, uint32 delay = 0, bool triggerAutoAttack = false);
         void MoveDistance(Unit* target, float distance);
         void ReInitializePatrolMovement();
+
+        // A module supplies a precomputed path and expects the unit to travel along
+        // it: a spline through the points, walk == false selects run speed.
+        void MovePath(Movement::PointsArray const& pointPath, uint32 moveMode, bool flying, bool walk = false);
+        bool MoveFall();
 
         MovementGeneratorType GetCurrentMovementGeneratorType() const;
         static char const* GetMovementGeneratorTypeName(MovementGeneratorType generator);

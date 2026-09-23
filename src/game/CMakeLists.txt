@@ -22,12 +22,15 @@ set (game_SRCS
     Camera.cpp
     Conditions.cpp
     CreatureGroups.cpp
+    CustomMerchantMgr.cpp
     DynamicVisibilityMgr.cpp
     DynamicVisibilityMgr.h
     DailyQuestHandler.cpp
     GameEventMgr.cpp
     GuardMgr.cpp
     GMTicketMgr.cpp
+    HeadlessSessionMgr.cpp
+    HeadlessSessionMgr.h
     GossipDef.cpp
     PerformanceMonitor.cpp
     HardcodedEvents.cpp
@@ -40,8 +43,11 @@ set (game_SRCS
     ObjectMgr.cpp
     ObjectPosSelector.cpp
     PlayerDump.cpp
+    PlayerLoginQueryHolder.cpp
+    PlayerLoginQueryHolder.h
     QuestDef.cpp
     ReputationMgr.cpp
+    ScriptObjects.h
     ScriptMgr.cpp
     SocialMgr.cpp
     StatSystem.cpp
@@ -82,6 +88,7 @@ set (game_SRCS
     Battlegrounds/BattleGroundWS.cpp
     Battlegrounds/BattleGroundBR.cpp
     Battlegrounds/BattleGroundSV.cpp
+    Battlegrounds/BattleGroundTG.cpp
     Chat/Channel.cpp
     Chat/ChannelMgr.cpp
     Chat/Chat.cpp
@@ -102,6 +109,8 @@ set (game_SRCS
     Handlers/BattleGroundHandler.cpp
     Handlers/ChannelBroadcaster.cpp
     Handlers/ChannelHandler.cpp
+    Handlers/CharacterCreation.cpp
+    Handlers/CharacterCreation.h
     Handlers/CharacterHandler.cpp
     Handlers/ChatHandler.cpp
     Handlers/CombatHandler.cpp
@@ -130,6 +139,7 @@ set (game_SRCS
     HttpApi/TransferController.cpp
     HttpApi/TransferController.hpp
     LFG/LFGMgr.cpp
+    LFT/LFTBotFill.cpp
     LFT/LFTMgr.cpp
     LFT/LFTQeueue.cpp
     LFT/LFTUserGroups.cpp
@@ -145,6 +155,8 @@ set (game_SRCS
     Maps/GridSearchers.cpp
     Maps/GridStates.cpp
     Maps/InstanceData.cpp
+    Maps/AreaTriggerAccess.cpp
+    Maps/AreaTriggerAccess.h
     Maps/Map.cpp
     Maps/MapManager.cpp
     Maps/MapPersistentStateMgr.cpp
@@ -192,8 +204,6 @@ set (game_SRCS
     OutdoorPvP/Register.cpp
     PacketBroadcast/MovementBroadcaster.cpp
     PacketBroadcast/PlayerBroadcaster.cpp
-    PlayerBots/PlayerBotAI.cpp
-    PlayerBots/PlayerBotMgr.cpp
     Protocol/Opcodes.cpp
     Protocol/WorldSocket.cpp
     Protocol/WorldSocketMgr.cpp
@@ -226,6 +236,7 @@ set (game_SRCS
     Camera.h
     Conditions.h
     CreatureGroups.h
+    CustomMerchantMgr.h
     Formulas.h
     GuidObjectScaling.h
     GameEventMgr.h
@@ -253,6 +264,7 @@ set (game_SRCS
     SharedDefines.h
     SocialMgr.h
     TransmogMgr.h
+    SessionTransport.h
     UnitEvents.h
     Weather.h
     World.h
@@ -293,6 +305,9 @@ set (game_SRCS
     Battlegrounds/BattleGroundWS.h
     Battlegrounds/BattleGroundBR.h
     Battlegrounds/BattleGroundSV.h
+    Battlegrounds/BattleGroundTG.h
+    Battlegrounds/ThornGorgeRules.h
+    Battlegrounds/ThornGorgeDiagnostics.h
     Chat/Channel.h
     Chat/ChannelMgr.h
     Chat/Chat.h
@@ -387,8 +402,6 @@ set (game_SRCS
     OutdoorPvP/OutdoorPvPSI.h
     PacketBroadcast/MovementBroadcaster.h
     PacketBroadcast/PlayerBroadcaster.h
-    PlayerBots/PlayerBotAI.h
-    PlayerBots/PlayerBotMgr.h
     Protocol/Opcodes.h
     Protocol/WorldSocket.h
     Protocol/WorldSocketMgr.h
@@ -505,6 +518,50 @@ if(USE_ANTICHEAT)
     )
 endif()
 
+if(BUILD_ELUNA)
+  list(APPEND game_SRCS
+    ElunaScriptBridge.cpp
+    Eluna/CustomMethods.h
+  )
+
+  file(GLOB ELUNA_SRCS CONFIGURE_DEPENDS
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/*.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/*.h
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/hooks/*.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/hooks/*.h
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/methods/*.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/methods/VMangos/*.h
+  )
+
+  if(MSVC)
+    # Eluna's parameter-pack name `Is` conflicts with its LuaRet<T>::Is
+    # predicate in current MSVC. Build a generated, semantically identical
+    # copy so the pinned submodule remains pristine.
+    set(ELUNA_MSVC_SOURCE_DIR ${CMAKE_CURRENT_BINARY_DIR}/eluna-msvc)
+    file(MAKE_DIRECTORY ${ELUNA_MSVC_SOURCE_DIR})
+    configure_file(
+      ${CMAKE_SOURCE_DIR}/src/modules/Eluna/hooks/SpellHooks.cpp
+      ${ELUNA_MSVC_SOURCE_DIR}/SpellHooks.cpp
+      COPYONLY
+    )
+    file(READ ${CMAKE_SOURCE_DIR}/src/modules/Eluna/hooks/HookHelpers.h ELUNA_HOOK_HELPERS)
+    string(FIND "${ELUNA_HOOK_HELPERS}" "size_t... Is" ELUNA_MSVC_RENAME_POSITION)
+    if(NOT ELUNA_MSVC_RENAME_POSITION EQUAL -1)
+      string(REPLACE "size_t... Is" "size_t... ReturnIndices" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "index_sequence<Is...>" "index_sequence<ReturnIndices...>" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "tuple_element_t<Is," "tuple_element_t<ReturnIndices," ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "static_cast<int>(Is)" "static_cast<int>(ReturnIndices)" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "std::get<Is>" "std::get<ReturnIndices>" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+      string(REPLACE "indices[Is]" "indices[ReturnIndices]" ELUNA_HOOK_HELPERS "${ELUNA_HOOK_HELPERS}")
+    endif()
+    file(WRITE ${ELUNA_MSVC_SOURCE_DIR}/HookHelpers.h "${ELUNA_HOOK_HELPERS}")
+    list(REMOVE_ITEM ELUNA_SRCS ${CMAKE_SOURCE_DIR}/src/modules/Eluna/hooks/SpellHooks.cpp)
+    list(APPEND ELUNA_SRCS ${ELUNA_MSVC_SOURCE_DIR}/SpellHooks.cpp)
+  endif()
+
+  list(APPEND game_SRCS ${ELUNA_SRCS})
+endif()
+
 
 include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}
@@ -531,7 +588,6 @@ include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/Objects
   ${CMAKE_CURRENT_SOURCE_DIR}/OutdoorPvP
   ${CMAKE_CURRENT_SOURCE_DIR}/PacketBroadcast
-  ${CMAKE_CURRENT_SOURCE_DIR}/PlayerBots
   ${CMAKE_CURRENT_SOURCE_DIR}/Protocol
   ${CMAKE_CURRENT_SOURCE_DIR}/Spells
   ${CMAKE_CURRENT_SOURCE_DIR}/Threat
@@ -548,10 +604,11 @@ include_directories(
   ${CMAKE_SOURCE_DIR}/src/shared
   ${CMAKE_BINARY_DIR}
   ${CMAKE_BINARY_DIR}/src/shared
+  # First: a vcpkg-tree ACE_ROOT or TBB_ROOT below also carries vcpkg's own OpenSSL 3.x headers.
+  ${OPENSSL_INCLUDE_DIR}
   ${MYSQL_INCLUDE_DIR}
   ${TBB_INCLUDE_DIRS}
   ${ACE_INCLUDE_DIR}
-  ${OPENSSL_INCLUDE_DIR}
 )
 
 if(WIN32)
@@ -599,6 +656,17 @@ source_group("HttpApi"
   REGULAR_EXPRESSION HttpApi
 )
 
+if(BUILD_ELUNA)
+  source_group("Eluna" FILES ${ELUNA_SRCS})
+endif()
+
+
+# playerbots host-hook stubs for non-bot builds.
+# When BUILD_PLAYERBOTS=OFF, the host-hook call sites need stub implementations.
+# With BUILD_PLAYERBOTS=ON, real implementations are in playerbots.lib.
+if(NOT BUILD_PLAYERBOTS)
+    list(APPEND game_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/PlayerbotStubs.cpp)
+endif()
 
 add_library(game STATIC
   ${game_SRCS}
@@ -611,6 +679,27 @@ target_link_libraries(game
   shared
   Detour
 )
+
+if(BUILD_ELUNA)
+  target_link_libraries(game lualib)
+  target_compile_definitions(game PUBLIC
+    ENABLE_ELUNA
+    ELUNA_EXPANSION=0
+    ELUNA_VMANGOS
+    ELUNA_USE_CUSTOM_METHODS
+  )
+  target_include_directories(game PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/Eluna
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/hooks
+    ${CMAKE_SOURCE_DIR}/src/modules/Eluna/methods/VMangos
+  )
+
+  install(
+    DIRECTORY ${CMAKE_SOURCE_DIR}/src/modules/Eluna/extensions
+    DESTINATION ${BIN_DIR}/lua_scripts
+  )
+endif()
 
 if(WIN32)
 	if (ENABLE_PROFILING)
@@ -658,5 +747,21 @@ else()
       ObjectMgr.h
       ScriptMgr.h
       )
+  endif()
+endif()
+
+# Independent of USE_PCH_OLD on purpose: on MSVC the old PCH implementation is
+# the default, and a fallback that lived only in the modern branch never ran
+# there (2026-09-04, found by a reader: -DUSE_PCH_OLD=OFF "must also be set").
+# No PCH (USE_PCH=OFF - the usual escape from MSVC's PCH size limits, or a
+# compiler without support): the sources still assume the precompiled set of
+# headers is in scope, so force-include the same header instead. Identical
+# semantics, just no .pch file. Without this a USE_PCH=OFF build died on
+# 2026-09-04 in Eluna (Hooks.h has no base types under ELUNA_VMANGOS, ElunaLoader.cpp needs sMapMgr) and a handful of core headers.
+if(NOT USE_PCH)
+  if(MSVC)
+    target_compile_options(game PRIVATE "/FI${CMAKE_CURRENT_SOURCE_DIR}/pchdef.h")
+  else()
+    target_compile_options(game PRIVATE "-include${CMAKE_CURRENT_SOURCE_DIR}/pchdef.h")
   endif()
 endif()
